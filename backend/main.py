@@ -3,13 +3,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from datetime import datetime
 import re
+import os
+
+origins = os.getenv("CORS_ORIGINS")
 
 app = FastAPI()
 
 # 1. CORS 설정 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://port-0-lostarkarchaeology-1maxx2alguarsbe.sel3.cloudtype.app/"],
+    allow_origins=origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
