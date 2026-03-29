@@ -198,6 +198,7 @@ async def admin_run_items(
             RunItem.ocr_text,
             RunItem.ocr_confidence,
             RunItem.image_filename,
+            RunItem.image_storage_url,
             Run.created_at,
             Run.user_id,
             Run.tool_spec_id,
@@ -226,7 +227,9 @@ async def admin_run_items(
     grouped: Dict[str, Dict[str, Any]] = {}
     for r in rows:
         image_url = None
-        if r.image_filename:
+        if getattr(r, "image_storage_url", None):
+            image_url = str(r.image_storage_url).strip() or None
+        elif r.image_filename:
             image_url = f"/static/track_ocr/crops/{r.image_filename}"
         key = str(r.run_id)
         mp = getattr(r, "_mapping", None)

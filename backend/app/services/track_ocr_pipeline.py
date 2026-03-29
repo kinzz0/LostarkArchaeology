@@ -23,6 +23,7 @@ from app.config import (
     TRACK_OCR_DIR,
     TRACK_OCR_RESULTS_FILE,
 )
+from app.supabase_storage import supabase_crops_configured, upload_track_ocr_crop_png
 from app.ocr.detector import detect_objects
 from app.ocr.preprocessor import crop_obb_region
 from app.ocr.processor import ocr_on_tracked_data
@@ -673,6 +674,7 @@ async def _process_track_and_ocr(
     created_at = datetime.now().isoformat()
     crops_dir = TRACK_OCR_DIR / "crops"
     crops_dir.mkdir(parents=True, exist_ok=True)
+    use_supabase_crops = supabase_crops_configured()
 
     items_to_save = []
     for i, item in enumerate(with_ocr):
@@ -681,10 +683,22 @@ async def _process_track_and_ocr(
             path_str = str(Path(item["image_path"]))
             crop_img = crop_obb_region(path_str, item["bbox"])
             crop_filename = f"{run_id}_{i}.png"
-            crop_path = crops_dir / crop_filename
-            cv2.imwrite(str(crop_path), crop_img)
-            obj["image_filename"] = crop_filename
-            obj["image_url"] = f"/static/track_ocr/crops/{crop_filename}"
+            ok_enc, buf = cv2.imencode(".png", crop_img)
+            if not ok_enc:
+                raise ValueError("crop png encode failed")
+            png_bytes = buf.tobytes()
+            storage_path = f"track_ocr/crops/{crop_filename}"
+            public_url = None
+            if use_supabase_crops:
+                public_url = await upload_track_ocr_crop_png(storage_path, png_bytes)
+            if public_url:
+                obj["image_filename"] = crop_filename
+                obj["image_url"] = public_url
+            else:
+                crop_path = crops_dir / crop_filename
+                cv2.imwrite(str(crop_path), crop_img)
+                obj["image_filename"] = crop_filename
+                obj["image_url"] = f"/static/track_ocr/crops/{crop_filename}"
         except Exception:
             obj["image_filename"] = None
             obj["image_url"] = None

@@ -40,6 +40,7 @@ numpy
 pydantic
 python-dotenv
 httpx
+supabase>=2.0.0
 
 # Database
 # SQLAlchemy asyncio/AsyncSession은 greenlet 필요 (미설치 시 greenlet 관련 ImportError/런타임 오류)

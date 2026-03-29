@@ -201,3 +201,8 @@ def _get_database_url():
     return url
 
 DATABASE_URL = _get_database_url()
+
+# Supabase Storage (track OCR 크롭 업로드 — 미설정 시 로컬 디스크만 사용)
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+SUPABASE_CROPS_BUCKET = os.getenv("SUPABASE_CROPS_BUCKET", "track-ocr-crops").strip()

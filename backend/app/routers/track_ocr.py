@@ -7,11 +7,19 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
+
 from app.config import TRACK_OCR_RESULTS_FILE
 from app.database import get_db
 from app.models.db_models import Run, RunItem, DropType, User, UserToolSpec
 
 router = APIRouter()
+
+
+def _item_image_storage_url(item: dict) -> Optional[str]:
+    u = item.get("image_url")
+    if isinstance(u, str) and (u.startswith("http://") or u.startswith("https://")):
+        return u.strip()
+    return None
 
 
 class SendToDbBody(BaseModel):
@@ -76,6 +84,10 @@ async def get_track_ocr_run(run_id: str):
         if r.get("id") == run_id:
             items = r.get("items", [])
             for it in items:
+                ext = _item_image_storage_url(it)
+                if ext:
+                    it["image_url"] = ext
+                    continue
                 fn = it.get("image_filename") or ""
                 if fn.startswith(run_id + "_"):
                     it["image_url"] = f"/static/track_ocr/crops/{fn}"
@@ -250,6 +262,7 @@ async def send_run_to_db(
                 ocr_confidence=it.get("ocr_confidence"),
                 verified=True if body.auto_verify else bool(it.get("verified") is True),
                 image_filename=it.get("image_filename"),
+                image_storage_url=_item_image_storage_url(it),
                 bbox=it.get("bbox"),
                 confidence=it.get("confidence"),
                 item_index=it.get("item_index"),

@@ -1,4 +1,5 @@
 """PostgreSQL 비동기 연결 및 세션"""
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 
@@ -40,3 +41,7 @@ async def init_db():
     """테이블 생성 (앱 기동 시 호출)"""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # 기존 DB에 컬럼만 추가 (create_all은 기존 테이블 ALTER 안 함)
+        await conn.execute(
+            text("ALTER TABLE run_items ADD COLUMN IF NOT EXISTS image_storage_url TEXT")
+        )

@@ -17,9 +17,21 @@ from app.models.db_models import ActionType, Run, RunItem, ScanResult, User, Use
 
 router = APIRouter()
 
+
+def _discord_redirect_uri() -> str:
+    """
+    Discord OAuth2 redirect_uri — 개발자 포털 Redirects와 글자 단위로 같아야 함.
+    끝 슬래시·따옴표·공백은 제거해 포털에 등록한 표준 형태와 맞춘다.
+    """
+    raw = os.getenv("DISCORD_REDIRECT_URI", "http://localhost:8000/api/auth/discord/callback").strip()
+    if (raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'")):
+        raw = raw[1:-1].strip()
+    return raw.rstrip("/")
+
+
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID", "").strip()
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "").strip()
-DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI", "http://localhost:8000/api/auth/discord/callback").strip()
+DISCORD_REDIRECT_URI = _discord_redirect_uri()
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:5173").rstrip("/")
 DISCORD_OAUTH_SCOPE = "identify"
 

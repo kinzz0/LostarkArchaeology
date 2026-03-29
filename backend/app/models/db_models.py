@@ -125,6 +125,7 @@ class RunItem(Base):
     ocr_confidence = Column(Float)
     verified = Column(Boolean, default=False)
     image_filename = Column(String(256))
+    image_storage_url = Column(Text)  # Supabase 등 공개 URL; 없으면 image_filename + /static
     bbox = Column(JSONB)
     confidence = Column(Float)
     item_index = Column(Integer)
