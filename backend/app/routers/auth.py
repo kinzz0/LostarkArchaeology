@@ -29,6 +29,22 @@ _oauth_states: Dict[str, datetime] = {}
 _sessions: Dict[str, Dict[str, Any]] = {}
 
 
+def _session_cookie_secure_samesite() -> tuple[bool, str]:
+    """
+    (secure, samesite) — 프론트·API 도메인이 다를 때 fetch(credentials:include)에 쿠키를 붙이려면
+    SameSite=None + Secure(HTTPS) 필요. 로컬 http 프론트는 Lax + secure=False.
+    SESSION_COOKIE_CROSS_SITE=1|0 으로 강제 가능.
+    """
+    flag = os.getenv("SESSION_COOKIE_CROSS_SITE", "").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return False, "lax"
+    if flag in ("1", "true", "yes", "on"):
+        return True, "none"
+    if FRONTEND_BASE_URL.lower().startswith("https://"):
+        return True, "none"
+    return False, "lax"
+
+
 class UpdateMySettingsBody(BaseModel):
     tool_spec_id: Optional[int] = None
 
@@ -405,12 +421,13 @@ async def discord_callback(
     }
 
     resp = RedirectResponse(url=f"{FRONTEND_BASE_URL}/login?status=success", status_code=302)
+    cookie_secure, cookie_samesite = _session_cookie_secure_samesite()
     resp.set_cookie(
         key="session_id",
         value=session_id,
         httponly=True,
-        secure=False,
-        samesite="lax",
+        secure=cookie_secure,
+        samesite=cookie_samesite,
         max_age=int(timedelta(hours=SESSION_TTL_HOURS).total_seconds()),
         path="/",
     )
@@ -449,7 +466,14 @@ async def auth_logout(request: Request, response: Response):
     session_id = request.cookies.get("session_id")
     if session_id:
         _sessions.pop(session_id, None)
-    response.delete_cookie(key="session_id", path="/")
+    cookie_secure, cookie_samesite = _session_cookie_secure_samesite()
+    response.delete_cookie(
+        key="session_id",
+        path="/",
+        secure=cookie_secure,
+        httponly=True,
+        samesite=cookie_samesite,
+    )
     return {"ok": True}
 
 
