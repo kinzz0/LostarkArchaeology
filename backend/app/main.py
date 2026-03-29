@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from app.config import DATABASE_URL, FRONTEND_MODEL_MODE  # noqa: F401
+from app.config import DATABASE_URL
 from app.database import init_db, AsyncSessionLocal
 from app.db_seed import seed_if_empty
 from app.models import db_models  # noqa: F401  # 테이블 등록

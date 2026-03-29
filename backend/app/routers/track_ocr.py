@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 
-from app.config import TRACK_OCR_RESULTS_FILE
+from app.config import TRACK_OCR_RESULTS_FILE, resolve_public_asset_url
 from app.database import get_db
 from app.models.db_models import Run, RunItem, DropType, User, UserToolSpec
 
@@ -90,9 +90,9 @@ async def get_track_ocr_run(run_id: str):
                     continue
                 fn = it.get("image_filename") or ""
                 if fn.startswith(run_id + "_"):
-                    it["image_url"] = f"/static/track_ocr/crops/{fn}"
+                    it["image_url"] = resolve_public_asset_url(f"/static/track_ocr/crops/{fn}")
                 else:
-                    it["image_url"] = it.get("image_url")
+                    it["image_url"] = resolve_public_asset_url(it.get("image_url"))
             payload = {
                 "id": r.get("id"),
                 "created_at": r.get("created_at"),
@@ -101,8 +101,8 @@ async def get_track_ocr_run(run_id: str):
                 "scan_result": r.get("scan_result"),
                 "action_type": r.get("action_type"),
                 "gauge_consumed": r.get("gauge_consumed"),
-                "scan_frame_image_url": r.get("scan_frame_image_url"),
-                "scan_ocr_processed_image_url": r.get("scan_ocr_processed_image_url"),
+                "scan_frame_image_url": resolve_public_asset_url(r.get("scan_frame_image_url")),
+                "scan_ocr_processed_image_url": resolve_public_asset_url(r.get("scan_ocr_processed_image_url")),
                 "db_sent": r.get("db_sent", False),
                 "db_sent_at": r.get("db_sent_at"),
             }

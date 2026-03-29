@@ -1,5 +1,5 @@
 """
-트랙-OCR 백그라운드 파이프라인: 프레임 저장·YOLO 트래킹·OCR·스캔/행동 추론·결과 JSON.
+트랙-OCR 백그라운드 파이프라인: 프레임 저장·프론트 탐지 결과 집계·OCR·스캔/행동 추론·결과 JSON.
 라우터(`routers/capture.py`)는 엔드포인트만 두고 이 모듈을 호출한다.
 """
 from __future__ import annotations
@@ -24,7 +24,6 @@ from app.config import (
     TRACK_OCR_RESULTS_FILE,
 )
 from app.supabase_storage import supabase_crops_configured, upload_track_ocr_crop_png
-from app.ocr.detector import detect_objects
 from app.ocr.preprocessor import crop_obb_region
 from app.ocr.processor import ocr_on_tracked_data
 from app.ocr.run_inference import (
@@ -55,7 +54,7 @@ ITEM_REFINE_PREV_WINDOW = 4
 
 def _first_pass_detect_stride() -> int:
     """
-    첫 패스 YOLO 호출 간격. 1=매 프레임, 2=격프레임만 탐지 → track_ms 대략 절반.
+    첫 패스에서 쓸 프레임 간격. 프론트가 매 프레임 탐지를 넘기면 1로 고정.
     한 프레임만 깜빡이는 UI는 놓칠 수 있음. 환경변수 TRACK_OCR_FIRST_PASS_STRIDE (기본 1).
     """
     try:
@@ -235,7 +234,7 @@ def _write_track_ocr_item_label_debug(
     summary_lines = [
         f"run_id={run_id}",
         f"프레임 수: {len(saved_paths)}",
-        f"[1] detect_and_track 전체 검출 행 수: {len(tracked_all)} → 라벨별 행 수: {labels_all_rows}",
+        f"[1] 프론트 탐지 1패스 검출 행 수: {len(tracked_all)} → 라벨별 행 수: {labels_all_rows}",
         f"[2] OCR_TARGET({sorted(OCR_TARGET_LABELS)}) 밖이라 파이프라인에서 제외된 행: {len(non_target_rows)} → {labels_non_target_rows}",
         f"[3] OCR 대상 후보(tracked_candidates) 행 수: {len(tracked_candidates)} → 라벨별 행 수: {labels_candidate_rows}",
         f"[3-1] item(필터 전) 건수: {item_counts_before_filter}",
@@ -467,7 +466,7 @@ async def _process_track_and_ocr(
         if frontend_detections_by_frame and frame_idx < len(frontend_detections_by_frame):
             dets = frontend_detections_by_frame[frame_idx] or []
         else:
-            dets = await detect_objects(image_path, confidence_threshold=0.5)
+            dets = []
         first_pass_detect_count += 1
         for det_idx, d in enumerate(dets):
             tracked_all.append(
@@ -481,7 +480,7 @@ async def _process_track_and_ocr(
     track_ms = int((datetime.now().timestamp() - t0) * 1000)
     tracked_candidates = [t for t in tracked_all if t.get("label") in OCR_TARGET_LABELS]
 
-    # 스캔/행동·도약 추론에서 YOLO 재호출 방지: 프레임별 탐지 결과를 경로 키로 재사용
+    # 스캔/행동·도약 추론: 프레임별 탐지 결과를 경로 키로 재사용
     dets_by_path_cache: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for r in tracked_all:
         p = str(r.get("image_path") or "").strip()
@@ -844,8 +843,8 @@ async def _run_track_ocr_job(
     TRACK_OCR_JOBS[job_id]["status"] = "running"
     TRACK_OCR_JOBS[job_id]["started_at"] = datetime.now().isoformat()
     try:
-        # 전체 파이프라인을 별도 스레드에서 돌려 메인 이벤트 루프(/detect 등)가 막히지 않게 함.
-        # 내부에서 별도 asyncio.run 루프가 돌며, detect/OCR은 추가로 to_thread 분산.
+        # 전체 파이프라인을 별도 스레드에서 돌려 메인 이벤트 루프가 막히지 않게 함.
+        # 내부에서 별도 asyncio.run 루프가 돌며, OCR은 추가로 to_thread 분산.
         def _pipeline_in_thread() -> Dict[str, Any]:
             return asyncio.run(
                 _process_track_and_ocr(

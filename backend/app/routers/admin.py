@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import resolve_public_asset_url
 from app.database import get_db
 from app.models.db_models import ActionType, Run, RunItem, ScanResult, User, UserToolSpec
 from app.routers import auth as auth_router
@@ -276,7 +277,7 @@ async def admin_run_items(
                 "ocr_text": r.ocr_text,
                 "ocr_confidence": r.ocr_confidence,
                 "image_filename": r.image_filename,
-                "image_url": image_url,
+                "image_url": resolve_public_asset_url(image_url),
             }
         )
     total_pages = 0 if total_runs == 0 else int((total_runs + safe_limit - 1) / safe_limit)

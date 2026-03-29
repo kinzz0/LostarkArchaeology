@@ -8,8 +8,6 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.ocr.detector import detect_objects
-
 # 스캔: common(0), uncommon(1) / 행동: normal(2), chest(3), mini(4) / 게이지: gauge(5)
 SCAN_LABELS = {"common", "uncommon"}
 ACTION_LABELS = {"normal", "chest", "mini"}
@@ -61,7 +59,7 @@ def _pick_best_scan_path_from_cached_dets(
     frame_paths: List[str],
 ) -> Optional[str]:
     """
-    샘플 프레임별 detect_objects 결과로부터 스캔 참고용 대표 프레임 경로를 고른다.
+    샘플 프레임별 탐지 결과(dict)로부터 스캔 참고용 대표 프레임 경로를 고른다.
     (기존 `_pick_best_scan_frame_path`와 동일 규칙, 단 탐지는 이미 수행된 dict를 사용)
     """
     if not dets_by_path:
@@ -119,12 +117,10 @@ async def infer_scan_and_action_from_frames(
     dets_by_path_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None,
 ) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[List[Any]]]:
     """
-    프레임들에 대해 탐지를 돌려 스캔 결과(common/uncommon)와 행동(normal/chest/mini)을 추론.
+    프레임들에 대해 탐지 결과(프론트 ONNX → 파이프라인 캐시)로 스캔·행동을 추론.
 
-    - 샘플 프레임마다 ``detect_objects``는 **최대 1회**만 호출하며, 스캔 집계·행동 집계·
-      스캔 참고 이미지용 대표 경로 산출에 동일 결과를 재사용한다.
-    - ``dets_by_path_cache``가 있으면 해당 경로는 캐시된 탐지 리스트를 쓰고 ``detect_objects``를 생략한다
-      (``track_ocr_pipeline`` 첫 패스와 중복 YOLO 방지). 경로가 캐시에 없을 때만 탐지한다.
+    - ``dets_by_path_cache``: ``track_ocr_pipeline`` 첫 패스에서 채운 프레임별 탐지 목록.
+      캐시에 없는 경로는 빈 탐지로 간주한다(백엔드 YOLO 없음).
     - ``scan_hint`` / ``action_hint``가 유효하면 해당 축 추론 루프를 생략할 수 있다.
       둘 다 유효하면 스캔 bbox용으로만 탐지 1회(또는 캐시 히트 시 생략).
 
@@ -158,9 +154,7 @@ async def infer_scan_and_action_from_frames(
                 if dets_by_path_cache is not None and best_scan_path in dets_by_path_cache:
                     dets_one = dets_by_path_cache[best_scan_path]
                 else:
-                    dets_one = await detect_objects(
-                        best_scan_path, confidence_threshold=confidence_threshold
-                    )
+                    dets_one = []
                 best_scan_bbox = pick_best_scan_bbox_for_label(dets_one, scan_result)
             except Exception:
                 best_scan_bbox = None
@@ -176,7 +170,7 @@ async def infer_scan_and_action_from_frames(
             if dets_by_path_cache is not None and path in dets_by_path_cache:
                 dets = dets_by_path_cache[path]
             else:
-                dets = await detect_objects(path, confidence_threshold=confidence_threshold)
+                dets = []
             dets_by_path[path] = dets
         except Exception:
             continue
@@ -216,7 +210,7 @@ async def infer_double_potion_from_frames(
     confidence_threshold: float = 0.4,
     dets_by_path_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None,
 ) -> bool:
-    """샘플 프레임들에서 double_potion 라벨 존재 여부를 반환. 캐시가 있으면 해당 경로는 탐지 생략."""
+    """샘플 프레임들에서 double_potion 라벨 존재 여부. 캐시에 없는 경로는 탐지 없음으로 간주."""
     if not frame_paths:
         return False
     step = max(1, len(frame_paths) // max_frames) if len(frame_paths) > max_frames else 1
@@ -228,7 +222,7 @@ async def infer_double_potion_from_frames(
             if dets_by_path_cache is not None and path in dets_by_path_cache:
                 dets = dets_by_path_cache[path]
             else:
-                dets = await detect_objects(path, confidence_threshold=confidence_threshold)
+                dets = []
             for d in dets:
                 label = (d.get("label") or "").strip()
                 if label == DOUBLE_POTION_LABEL:

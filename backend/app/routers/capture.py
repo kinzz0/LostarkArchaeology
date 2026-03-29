@@ -10,8 +10,7 @@ import uuid
 import aiofiles
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from app.config import ALLOWED_EXTENSIONS, FRONTEND_MODEL_MODE, TRACK_OCR_DIR
-from app.ocr.detector import detect_objects
+from app.config import ALLOWED_EXTENSIONS, TRACK_OCR_DIR
 from app.ocr.processor import process_image
 from app.ocr.run_inference import ACTION_LABELS, SCAN_LABELS
 from app.services.track_ocr_pipeline import (
@@ -42,13 +41,12 @@ async def capture_screen(file: UploadFile = File(...)):
             await f.write(content)
 
         ocr_data = await process_image(str(tmp_path))
-        detections = await detect_objects(str(tmp_path))
 
         return {
             "filename": filename,
             "image_url": None,
             "ocr_data": ocr_data,
-            "detections": detections,
+            "detections": [],
             "timestamp": datetime.now().isoformat(),
         }
     except Exception as e:
@@ -106,10 +104,10 @@ async def capture_track_and_ocr(
             normalized.append(frame_rows)
         frontend_detections_by_frame = normalized
 
-    if FRONTEND_MODEL_MODE and not frontend_detections_by_frame:
+    if not frontend_detections_by_frame:
         raise HTTPException(
             status_code=400,
-            detail="FRONTEND_MODEL_MODE=true 에서는 frontend_detections_json(프레임별 탐지 결과)이 필요합니다.",
+            detail="frontend_detections_json(프레임별 탐지 결과)이 필요합니다. 프론트 ONNX 탐지 결과를 보내 주세요.",
         )
 
     _cleanup_old_jobs()
