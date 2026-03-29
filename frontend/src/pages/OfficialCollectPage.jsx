@@ -43,6 +43,17 @@ function queueStatusLabel(status) {
   return status || '대기'
 }
 
+async function inferDetectionsForFile(file) {
+  const globalDetector = window.__bestOnnxDetect
+  if (typeof globalDetector === 'function') {
+    const out = await globalDetector(file)
+    if (Array.isArray(out)) return out
+    return Array.isArray(out?.detections) ? out.detections : []
+  }
+  const res = await detectImage(file, { timeoutMs: DETECT_TIMEOUT_MS })
+  return Array.isArray(res?.detections) ? res.detections : []
+}
+
 function AnalysisQueuePanel({ jobs, collecting, sharing }) {
   const empty = !jobs.length
   return (
@@ -250,8 +261,10 @@ function OfficialCollectPage() {
     setSharing(false)
   }, [])
 
-  const enqueueAnalysisJob = useCallback(async (files) => {
-    const queued = await startTrackAndOcr(files)
+  const enqueueAnalysisJob = useCallback(async (files, frontendDetections = null) => {
+    const queued = await startTrackAndOcr(files, {
+      frontendDetections: Array.isArray(frontendDetections) ? frontendDetections : undefined,
+    })
     const jobId = queued?.job_id
     if (!jobId) throw new Error('분석 작업 등록 실패: job_id 없음')
     const runId = queued?.run_id || ''
@@ -335,13 +348,25 @@ function OfficialCollectPage() {
       canvas.height = h
     }
     const files = []
+    const frontendDetections = []
     const started = Date.now()
     let idx = 0
     while (Date.now() - started < ms) {
       if (!videoRef.current?.srcObject) break
       ctx.drawImage(video, 0, 0, w, h)
       const f = await fileFromCanvas(canvas, `collect_${idx++}.png`)
-      if (f) files.push(f)
+      if (f) {
+        files.push(f)
+        try {
+          // 프론트 모델(있으면) 또는 기존 detect API 결과를 프레임별로 함께 수집.
+          // 백엔드는 이 배열을 받아 재탐지 없이 OCR/집계를 수행할 수 있다.
+          // eslint-disable-next-line no-await-in-loop
+          const dets = await inferDetectionsForFile(f)
+          frontendDetections.push(Array.isArray(dets) ? dets : [])
+        } catch {
+          frontendDetections.push([])
+        }
+      }
       // eslint-disable-next-line no-await-in-loop
       await new Promise((r) => setTimeout(r, COLLECT_INTERVAL_MS))
     }
@@ -357,7 +382,7 @@ function OfficialCollectPage() {
     setCollecting(false)
     collectingRef.current = false
     setStatus('분석 큐 등록 중..')
-    void enqueueAnalysisJob(files).catch((e) => {
+    void enqueueAnalysisJob(files, frontendDetections).catch((e) => {
       setStatus(e.message || '수집/저장 실패')
     })
   }, [enqueueAnalysisJob, fileFromCanvas])

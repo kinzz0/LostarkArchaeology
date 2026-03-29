@@ -149,6 +149,9 @@ export async function startTrackAndOcr(files, options = {}) {
   if (typeof options.hasDoublePotionHint === 'boolean') {
     formData.append('has_double_potion_hint', options.hasDoublePotionHint ? '1' : '0')
   }
+  if (Array.isArray(options.frontendDetections)) {
+    formData.append('frontend_detections_json', JSON.stringify(options.frontendDetections))
+  }
 
   const response = await fetch(`${API_BASE}/capture/track-and-ocr`, {
     method: 'POST',
@@ -184,9 +187,15 @@ export async function trackAndOcr(files, options = {}) {
   const actionHint = options.actionHint
   const scanHint = options.scanHint
   const hasDoublePotionHint = options.hasDoublePotionHint
+  const frontendDetections = options.frontendDetections
   const startedAt = Date.now()
 
-  const queued = await startTrackAndOcr(files, { actionHint, scanHint, hasDoublePotionHint })
+  const queued = await startTrackAndOcr(files, {
+    actionHint,
+    scanHint,
+    hasDoublePotionHint,
+    frontendDetections,
+  })
   const jobId = queued?.job_id
   if (!jobId) {
     throw new Error('작업 등록 실패: job_id가 없습니다.')

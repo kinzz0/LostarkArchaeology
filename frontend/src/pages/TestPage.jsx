@@ -127,6 +127,17 @@ async function fileFromGaugeCrop(detectCanvas, detection, pad = 4) {
   return new File([blob], 'gauge_crop.png', { type: 'image/png' })
 }
 
+async function inferDetectionsForFile(file) {
+  const globalDetector = window.__bestOnnxDetect
+  if (typeof globalDetector === 'function') {
+    const out = await globalDetector(file)
+    if (Array.isArray(out)) return out
+    return Array.isArray(out?.detections) ? out.detections : []
+  }
+  const res = await detectImage(file)
+  return Array.isArray(res?.detections) ? res.detections : []
+}
+
 function TestPage() {
   const [status, setStatus] = useState('idle') // idle | sharing | error
   const [detections, setDetections] = useState([])
@@ -261,6 +272,7 @@ function TestPage() {
     setTrackOcrResult(null)
 
     const files = []
+    const frontendDetections = []
     const start = Date.now()
     const durationMs = ACTION_GAUGE_COLLECT_MS
 
@@ -270,7 +282,16 @@ function TestPage() {
         offscreen.toBlob((b) => resolve(b), 'image/png')
       })
       if (blob) {
-        files.push(new File([blob], `auto_${files.length}.png`, { type: 'image/png' }))
+        const file = new File([blob], `auto_${files.length}.png`, { type: 'image/png' })
+        files.push(file)
+        try {
+          // 프론트 모델 결과를 프레임별로 전달하면 백엔드는 재탐지 없이 계산 가능.
+          // eslint-disable-next-line no-await-in-loop
+          const dets = await inferDetectionsForFile(file)
+          frontendDetections.push(Array.isArray(dets) ? dets : [])
+        } catch {
+          frontendDetections.push([])
+        }
       }
 
       const elapsed = Date.now() - start
@@ -304,6 +325,7 @@ function TestPage() {
         actionHint,
         scanHint: liveScanResultRef.current,
         hasDoublePotionHint,
+        frontendDetections,
       })
       if (PERF_LOG_ENABLED) {
         console.log('[PERF][trackAndOcr-wait]', {
@@ -573,13 +595,24 @@ function TestPage() {
     const ctx = offscreen.getContext('2d')
 
     const files = []
+    const frontendDetections = []
     const delay = (ms) => new Promise((r) => setTimeout(r, ms))
     for (let i = 0; i < frameCount; i++) {
       ctx.drawImage(video, 0, 0)
       const blob = await new Promise((resolve) => {
         offscreen.toBlob((b) => resolve(b), 'image/png')
       })
-      if (blob) files.push(new File([blob], `frame_${i}.png`, { type: 'image/png' }))
+      if (blob) {
+        const file = new File([blob], `frame_${i}.png`, { type: 'image/png' })
+        files.push(file)
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          const dets = await inferDetectionsForFile(file)
+          frontendDetections.push(Array.isArray(dets) ? dets : [])
+        } catch {
+          frontendDetections.push([])
+        }
+      }
       if (i < frameCount - 1) await delay(300)
     }
 
@@ -598,6 +631,7 @@ function TestPage() {
         actionHint,
         scanHint: liveScanResultRef.current,
         hasDoublePotionHint,
+        frontendDetections,
       })
       setTrackOcrResult(data)
       setTrackOcrStatus('done')
