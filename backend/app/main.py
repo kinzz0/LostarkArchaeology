@@ -38,11 +38,24 @@ app = FastAPI(
     version="1.0.0",
 )
 
+def _parse_cors_origins() -> list[str]:
+    raw = os.getenv("CORS_ORIGINS", "").strip()
+    if not raw:
+        return ["*"]
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+_allow_origins = _parse_cors_origins()
+_allow_credentials = True
+# Starlette: allow_origins에 "*"이면 allow_credentials는 False여야 함
+
+if _allow_origins == ["*"]:
+    _allow_credentials = False
+
 # CORS 설정
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Vite 개발 서버
-    allow_credentials=True,
+    allow_origins=_allow_origins,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
