@@ -11,7 +11,13 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { getAuthMe, getDashboardStats, getMyToolSpecs, logout } from '../services/api'
+import {
+  getAuthMe,
+  getDashboardStats,
+  getDiscordLoginUrl,
+  getMyToolSpecs,
+  logout,
+} from '../services/api'
 
 const ITEM_KEYS = ['common_item', 'uncommon_item', 'rare_item']
 const ITEM_LABEL_KO = {
@@ -326,7 +332,7 @@ function HomePage() {
           </div>
           {!authUser ? (
             <a
-              href="/api/auth/discord/login"
+              href={getDiscordLoginUrl()}
               className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-indigo-600 hover:bg-indigo-500 transition"
               aria-label="디스코드 로그인"
               title="디스코드 로그인"

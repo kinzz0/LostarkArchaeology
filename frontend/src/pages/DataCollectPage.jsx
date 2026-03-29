@@ -4,7 +4,7 @@ import ImageUploader from '../components/ImageUploader'
 import DataViewer from '../components/DataViewer'
 import StatusBar from '../components/StatusBar'
 import ScreenCapture from '../components/ScreenCapture'
-import { getAuthMe, logout } from '../services/api'
+import { getAuthMe, getDiscordLoginUrl, logout } from '../services/api'
 
 /** 기존 홈: 화면 캡처·업로더·데이터 뷰어 (경로 `/data-collect`) */
 function DataCollectPage() {
@@ -83,7 +83,7 @@ function DataCollectPage() {
           </div>
           {!authUser ? (
             <a
-              href="/api/auth/discord/login"
+              href={getDiscordLoginUrl()}
               className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-indigo-600 hover:bg-indigo-500 transition"
               aria-label="디스코드 로그인"
               title="디스코드 로그인"

@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import './App.css'
 import HomePage from './pages/HomePage'
 import TestPage from './pages/TestPage'
@@ -23,6 +23,8 @@ function App() {
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/admin" element={<AdminPage />} />
         <Route path="/collect" element={<OfficialCollectPage />} />
+        {/* /api/... 등 매칭 없는 경로는 빈 화면이 되므로 홈으로 보냄 (프론트에 /api/auth/... 링크 잘못 걸린 경우 등) */}
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
   )
