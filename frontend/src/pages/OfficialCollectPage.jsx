@@ -44,12 +44,6 @@ function queueStatusLabel(status) {
 }
 
 async function inferDetectionsForFile(file) {
-  const globalDetector = window.__bestOnnxDetect
-  if (typeof globalDetector === 'function') {
-    const out = await globalDetector(file)
-    if (Array.isArray(out)) return out
-    return Array.isArray(out?.detections) ? out.detections : []
-  }
   const res = await detectImage(file, { timeoutMs: DETECT_TIMEOUT_MS })
   return Array.isArray(res?.detections) ? res.detections : []
 }

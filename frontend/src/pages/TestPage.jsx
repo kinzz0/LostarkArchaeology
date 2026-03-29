@@ -16,14 +16,14 @@ const DOUBLE_POTION_LABEL = 'double_potion'
  * 백엔드에서 스캔 종류·아이템·행동 타입·게이지 등을 프레임들로 종합 추론한다.
  */
 const ACTION_GAUGE_COLLECT_MS = 6000
-/** 자동 수집 시 프레임 간격 (ms). /detect 프로브 없이 캡처만 해서 밀도 확보 */
+/** 자동 수집 시 프레임 간격 (ms). 탐지는 track 전송 시에만 ONNX로 수행 */
 const AUTO_TRACK_OCR_FRAME_INTERVAL_MS = 100
 /** 같은 세션에서 자동 파이프라인 재실행 최소 간격 (수집 길이보다 커야 함) */
 const AUTO_TRACK_OCR_COOLDOWN_MS = 7000
 const DETECT_DOWNSAMPLE_SCALE = 0.75
 /**
- * 라이브 /detect 호출 최소 간격 (requestAnimationFrame에서만 스케줄).
- * 너무 낮추면 서버·GPU 부하 증가; 너무 높으면 박스·common/uncommon 표시가 늦게 느껴짐.
+ * 라이브 ONNX 탐지 호출 최소 간격 (requestAnimationFrame에서만 스케줄).
+ * 너무 낮추면 WASM 부하 증가; 너무 높으면 박스·common/uncommon 표시가 늦게 느껴짐.
  */
 const LIVE_DETECT_MIN_INTERVAL_MS = 300
 /** 탐지 후 게이지 OCR 자동 갱신 최소 간격 (ms) — 아이템 프레임 있을 때만 */
@@ -34,7 +34,7 @@ const GAUGE_OCR_TARGET_CONFIDENCE = 0.8
 const GAUGE_OCR_RETRY_INTERVAL_MS = 120
 /** 무한 재시도로 UI가 잠기지 않도록 안전 상한 */
 const GAUGE_OCR_MAX_RETRIES = 20
-/** 탐지 전 게이지 기준선: 연속 샘플 프레임 수 (서버·모델 준비 후 1회 실행) */
+/** 탐지 전 게이지 기준선: 연속 샘플 프레임 수 (ONNX 워밍업 후 1회 실행) */
 const GAUGE_BEFORE_BASELINE_FRAME_COUNT = 3
 /** 기준선 각 프레임 사이 간격 */
 const GAUGE_BEFORE_BASELINE_INTER_FRAME_MS = 120
@@ -128,12 +128,6 @@ async function fileFromGaugeCrop(detectCanvas, detection, pad = 4) {
 }
 
 async function inferDetectionsForFile(file) {
-  const globalDetector = window.__bestOnnxDetect
-  if (typeof globalDetector === 'function') {
-    const out = await globalDetector(file)
-    if (Array.isArray(out)) return out
-    return Array.isArray(out?.detections) ? out.detections : []
-  }
   const res = await detectImage(file)
   return Array.isArray(res?.detections) ? res.detections : []
 }
@@ -141,23 +135,23 @@ async function inferDetectionsForFile(file) {
 function TestPage() {
   const [status, setStatus] = useState('idle') // idle | sharing | error
   const [detections, setDetections] = useState([])
-  /** /detect 응답: common | uncommon 스캔 종류 (실시간 프리뷰) */
+  /** ONNX 탐지 집계: common | uncommon 스캔 종류 (실시간 프리뷰) */
   const [liveScan, setLiveScan] = useState({ result: null, confidence: null })
   const [trackOcrStatus, setTrackOcrStatus] = useState('idle') // idle | loading | done | error
   const [trackOcrResult, setTrackOcrResult] = useState(null)
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const animationRef = useRef(null)
-  /** 라이브 /detect 전용 interval — 표시 루프(rAF)와 분리 */
+  /** 라이브 ONNX 탐지 전용 interval — 표시 루프(rAF)와 분리 */
   const liveDetectIntervalRef = useRef(null)
   const detectingRef = useRef(false)
-  /** 이전 /detect가 끝나기 전에 또 스케줄되면 true → 완료 후 최신 프레임으로 한 번 더 실행 */
+  /** 이전 탐지가 끝나기 전에 또 스케줄되면 true → 완료 후 최신 프레임으로 한 번 더 실행 */
   const pendingDetectRef = useRef(false)
   const streamRef = useRef(null)
   const trackOcrPhaseRef = useRef(false)
   const trackOcrLastRunRef = useRef(0)
   const latestDetectionsRef = useRef([])
-  /** 마지막 /detect 기준 스캔 힌트 (common|uncommon) — track-and-ocr에 전달 */
+  /** 마지막 탐지 기준 스캔 힌트 (common|uncommon) — track-and-ocr에 전달 */
   const liveScanResultRef = useRef(null)
   /** 아이템 없을 때 gauge OCR — 탐지 전 숫자 */
   const [gaugeBefore, setGaugeBefore] = useState(() => emptyGaugeSnapshot())
@@ -245,7 +239,7 @@ function TestPage() {
 
   /**
    * action_gauge 트리거 후 ACTION_GAUGE_COLLECT_MS 동안 프레임만 연속 캡처 → track-and-ocr.
-   * (라이브 /detect 프로브 없음 — 백엔드가 프레임들로 스캔·아이템·행동 등을 추론)
+   * (라이브 탐지 프로브 없이 캡처만 — 스캔·아이템·행동 등은 track-and-ocr 백엔드가 프레임으로 추론)
    */
   const startAutoTrackOcrFor5Seconds = useCallback(async (actionHint = null, hasDoublePotionHint = null) => {
     const video = videoRef.current
@@ -658,7 +652,7 @@ function TestPage() {
   /**
    * 화면 공유 시 두 경로를 분리:
    * - 표시: requestAnimationFrame — 비디오 + 마지막 탐지 박스만 그림(끊김 최소화)
-   * - 분석: setInterval — /detect만 호출해 latestDetectionsRef·스캔 UI 갱신(백그라운드에 가깝게)
+   * - 분석: setInterval — ONNX 탐지만 호출해 latestDetectionsRef·스캔 UI 갱신(백그라운드에 가깝게)
    */
   useEffect(() => {
     if (status !== 'sharing' || !streamRef.current) return
@@ -927,7 +921,7 @@ function TestPage() {
               )}
             </div>
             <p className="text-xs text-gray-600 mt-1.5">
-              탐지 전 숫자는 위 절차(3프레임)로만 설정합니다. 오른쪽 미리보기는 rAF로만 그려 끊김을 줄이고, /detect 분석은 별도 타이머(~{LIVE_DETECT_MIN_INTERVAL_MS}ms)로만 돌립니다. 탐지 후 숫자는 아이템이 잡힐 때{' '}
+              탐지 전 숫자는 위 절차(3프레임)로만 설정합니다. 오른쪽 미리보기는 rAF로만 그려 끊김을 줄이고, ONNX 탐지는 별도 타이머(~{LIVE_DETECT_MIN_INTERVAL_MS}ms)로만 돌립니다. 탐지 후 숫자는 아이템이 잡힐 때{' '}
               <span className="text-gray-500">gauge</span> OCR({GAUGE_OCR_THROTTLE_MS}ms 스로틀).
             </p>
           </div>
