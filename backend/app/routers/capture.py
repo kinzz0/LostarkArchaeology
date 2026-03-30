@@ -11,6 +11,7 @@ import aiofiles
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from app.config import ALLOWED_EXTENSIONS, TRACK_OCR_DIR
+from app.ocr.onnx_postprocess import detections_from_onnx_frame_payload
 from app.ocr.processor import process_image
 from app.ocr.run_inference import ACTION_LABELS, SCAN_LABELS
 from app.services.track_ocr_pipeline import (
@@ -20,6 +21,34 @@ from app.services.track_ocr_pipeline import (
 )
 
 router = APIRouter()
+
+
+def _normalize_detection_frame_rows(frame) -> List[dict]:
+    """탐지 dict 목록 → track_ocr 파이프라인용 행(8점 bbox 등)."""
+    if not isinstance(frame, list):
+        return []
+    frame_rows: List[dict] = []
+    for det in frame:
+        if not isinstance(det, dict):
+            continue
+        label = str(det.get("label") or "").strip()
+        bbox = det.get("bbox")
+        if not label or not isinstance(bbox, list) or len(bbox) < 8:
+            continue
+        try:
+            confidence = float(det.get("confidence") or 0.0)
+        except Exception:
+            confidence = 0.0
+        frame_rows.append(
+            {
+                "label": label,
+                "confidence": confidence,
+                "bbox": bbox[:8],
+                "class_id": det.get("class_id"),
+                "obb": bool(det.get("obb", True)),
+            }
+        )
+    return frame_rows
 
 
 @router.post("/capture")
@@ -62,52 +91,64 @@ async def capture_track_and_ocr(
     has_double_potion_hint: Optional[str] = Form(default=None),
     scan_hint: Optional[str] = Form(default=None),
     frontend_detections_json: Optional[str] = Form(default=None),
+    frontend_onnx_outputs_json: Optional[str] = Form(default=None),
+    onnx_conf_fallback: Optional[str] = Form(default="0.5"),
 ):
     """여러 프레임을 받아 track-ocr 작업을 백그라운드로 등록하고 job_id를 반환."""
     if len(files) < 2:
         raise HTTPException(status_code=400, detail="트래킹을 위해 최소 2개 이상의 이미지를 보내주세요.")
 
+    try:
+        conf_fb = float((onnx_conf_fallback or "0.5").strip())
+    except Exception:
+        conf_fb = 0.5
+
     frontend_detections_by_frame: Optional[List[List[dict]]] = None
-    if frontend_detections_json:
+
+    if frontend_onnx_outputs_json:
+        try:
+            parsed_onnx = json.loads(frontend_onnx_outputs_json)
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail="frontend_onnx_outputs_json 파싱 실패(JSON 형식 오류)",
+            )
+        if not isinstance(parsed_onnx, list):
+            raise HTTPException(
+                status_code=400,
+                detail="frontend_onnx_outputs_json은 프레임별 배열(list)이어야 합니다.",
+            )
+        normalized: List[List[dict]] = []
+        for item in parsed_onnx:
+            if not isinstance(item, dict):
+                normalized.append([])
+                continue
+            raw_dets = detections_from_onnx_frame_payload(item, conf_fallback=conf_fb)
+            normalized.append(_normalize_detection_frame_rows(raw_dets))
+        frontend_detections_by_frame = normalized
+
+    elif frontend_detections_json:
         try:
             parsed = json.loads(frontend_detections_json)
         except Exception:
             raise HTTPException(status_code=400, detail="frontend_detections_json 파싱 실패(JSON 형식 오류)")
         if not isinstance(parsed, list):
             raise HTTPException(status_code=400, detail="frontend_detections_json은 프레임별 배열(list)이어야 합니다.")
-        normalized: List[List[dict]] = []
+        normalized = []
         for frame in parsed:
-            if not isinstance(frame, list):
-                normalized.append([])
-                continue
-            frame_rows: List[dict] = []
-            for det in frame:
-                if not isinstance(det, dict):
-                    continue
-                label = str(det.get("label") or "").strip()
-                bbox = det.get("bbox")
-                if not label or not isinstance(bbox, list) or len(bbox) < 8:
-                    continue
-                try:
-                    confidence = float(det.get("confidence") or 0.0)
-                except Exception:
-                    confidence = 0.0
-                frame_rows.append(
-                    {
-                        "label": label,
-                        "confidence": confidence,
-                        "bbox": bbox[:8],
-                        "class_id": det.get("class_id"),
-                        "obb": bool(det.get("obb", True)),
-                    }
-                )
-            normalized.append(frame_rows)
+            normalized.append(_normalize_detection_frame_rows(frame if isinstance(frame, list) else []))
         frontend_detections_by_frame = normalized
 
     if not frontend_detections_by_frame:
         raise HTTPException(
             status_code=400,
-            detail="frontend_detections_json(프레임별 탐지 결과)이 필요합니다. 프론트 ONNX 탐지 결과를 보내 주세요.",
+            detail="frontend_onnx_outputs_json(ONNX raw 텐서·meta) 또는 frontend_detections_json 중 하나가 필요합니다.",
+        )
+
+    if len(frontend_detections_by_frame) != len(files):
+        raise HTTPException(
+            status_code=400,
+            detail=f"프레임 수 불일치: 이미지 {len(files)}장, 탐지/ONNX 배열 {len(frontend_detections_by_frame)}개",
         )
 
     _cleanup_old_jobs()
