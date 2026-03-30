@@ -1,6 +1,7 @@
 """
-프론트 ONNX session.run() 직후 텐서(float32) + letterbox meta → 박스·라벨·점수.
-프론트 `best-onnx-detect.js` 와 동일 규칙(스캔·NMS 포함).
+YOLO ONNX raw 출력(float32) + letterbox meta → 박스·라벨·점수 (참고·테스트용).
+
+운영 탐지는 `app.ocr.detector`(Ultralytics)를 사용한다.
 """
 from __future__ import annotations
 

@@ -1,6 +1,5 @@
 """
-트랙-OCR 백그라운드 파이프라인: 프레임 저장·프론트 탐지 결과 집계·OCR·스캔/행동 추론·결과 JSON.
-라우터(`routers/capture.py`)는 엔드포인트만 두고 이 모듈을 호출한다.
+트랙-OCR 백그라운드 파이프라인: 프레임 저장·(옵션) 클라이언트 탐지 또는 백엔드 YOLO ONNX·OCR·결과 JSON.
 """
 from __future__ import annotations
 
@@ -22,6 +21,7 @@ from app.config import (
     OCR_TARGET_LABELS,
     TRACK_OCR_DIR,
     TRACK_OCR_RESULTS_FILE,
+    YOLO_DETECT_CONF_FALLBACK,
 )
 from app.supabase_storage import supabase_crops_configured, upload_track_ocr_crop_png
 from app.ocr.preprocessor import crop_obb_region
@@ -449,14 +449,31 @@ async def _process_track_and_ocr(
     has_double_potion_hint: Optional[bool] = None,
     scan_hint: Optional[str] = None,
     frontend_detections_by_frame: Optional[List[List[Dict[str, Any]]]] = None,
+    detector_conf_fallback: Optional[float] = None,
 ) -> Dict[str, Any]:
+    if frontend_detections_by_frame is not None and len(frontend_detections_by_frame) != len(saved_paths):
+        raise ValueError(
+            f"탐지 배열 길이({len(frontend_detections_by_frame)})와 프레임 수({len(saved_paths)}) 불일치"
+        )
+
+    conf_fb = (
+        float(detector_conf_fallback)
+        if detector_conf_fallback is not None
+        else YOLO_DETECT_CONF_FALLBACK
+    )
+    if frontend_detections_by_frame is None:
+        from app.ocr.detector import detect_objects_for_paths
+
+        frontend_detections_by_frame = await asyncio.to_thread(
+            detect_objects_for_paths,
+            saved_paths,
+            conf_fb,
+        )
+
     t0_total = datetime.now().timestamp()
     # 1) action_gauge 이후 프레임 후보를 위해 프레임별 탐지(트래킹 미사용)
     t0 = datetime.now().timestamp()
     first_pass_stride = _first_pass_detect_stride()
-    if frontend_detections_by_frame is not None:
-        # 프론트가 프레임별 탐지 결과를 넘긴 경우, 누락 없이 그대로 사용한다.
-        first_pass_stride = 1
     tracked_all: List[Dict[str, Any]] = []
     first_pass_detect_count = 0
     for frame_idx, image_path in enumerate(saved_paths):
@@ -840,6 +857,7 @@ async def _run_track_ocr_job(
     has_double_potion_hint: Optional[bool] = None,
     scan_hint: Optional[str] = None,
     frontend_detections_by_frame: Optional[List[List[Dict[str, Any]]]] = None,
+    detector_conf_fallback: Optional[float] = None,
 ) -> None:
     TRACK_OCR_JOBS[job_id]["status"] = "running"
     TRACK_OCR_JOBS[job_id]["started_at"] = datetime.now().isoformat()
@@ -855,6 +873,7 @@ async def _run_track_ocr_job(
                     has_double_potion_hint=has_double_potion_hint,
                     scan_hint=scan_hint,
                     frontend_detections_by_frame=frontend_detections_by_frame,
+                    detector_conf_fallback=detector_conf_fallback,
                 )
             )
 

@@ -1,4 +1,6 @@
-# 객체 탐지(YOLO)는 브라우저 ONNX 전담 — 백엔드에 torch/ultralytics 불필요.
+# 객체 탐지: Ultralytics YOLO-OBB + PyTorch (기본 CPU). GPU는 torch CUDA 빌드 + YOLO_DEVICE=cuda:0
+torch
+ultralytics
 #
 # Paddle: PyPI 기본 paddlepaddle 설치는 환경과 안 맞을 수 있음.
 # venv 생성 후 공식 인덱스로 설치:

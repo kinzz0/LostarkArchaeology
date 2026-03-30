@@ -11,7 +11,6 @@ import aiofiles
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from app.config import ALLOWED_EXTENSIONS, TRACK_OCR_DIR
-from app.ocr.onnx_postprocess import detections_from_onnx_frame_payload
 from app.ocr.processor import process_image
 from app.ocr.run_inference import ACTION_LABELS, SCAN_LABELS
 from app.services.track_ocr_pipeline import (
@@ -91,43 +90,22 @@ async def capture_track_and_ocr(
     has_double_potion_hint: Optional[str] = Form(default=None),
     scan_hint: Optional[str] = Form(default=None),
     frontend_detections_json: Optional[str] = Form(default=None),
-    frontend_onnx_outputs_json: Optional[str] = Form(default=None),
-    onnx_conf_fallback: Optional[str] = Form(default="0.5"),
+    yolo_conf_fallback: Optional[str] = Form(default=None),
 ):
-    """여러 프레임을 받아 track-ocr 작업을 백그라운드로 등록하고 job_id를 반환."""
+    """여러 프레임을 받아 track-ocr 작업을 백그라운드로 등록. 탐지 생략 시 백엔드 CPU ONNX."""
     if len(files) < 2:
         raise HTTPException(status_code=400, detail="트래킹을 위해 최소 2개 이상의 이미지를 보내주세요.")
 
-    try:
-        conf_fb = float((onnx_conf_fallback or "0.5").strip())
-    except Exception:
-        conf_fb = 0.5
+    detector_conf_fallback: Optional[float] = None
+    if yolo_conf_fallback is not None and str(yolo_conf_fallback).strip():
+        try:
+            detector_conf_fallback = float(str(yolo_conf_fallback).strip())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="yolo_conf_fallback 는 숫자여야 합니다.")
 
     frontend_detections_by_frame: Optional[List[List[dict]]] = None
 
-    if frontend_onnx_outputs_json:
-        try:
-            parsed_onnx = json.loads(frontend_onnx_outputs_json)
-        except Exception:
-            raise HTTPException(
-                status_code=400,
-                detail="frontend_onnx_outputs_json 파싱 실패(JSON 형식 오류)",
-            )
-        if not isinstance(parsed_onnx, list):
-            raise HTTPException(
-                status_code=400,
-                detail="frontend_onnx_outputs_json은 프레임별 배열(list)이어야 합니다.",
-            )
-        normalized: List[List[dict]] = []
-        for item in parsed_onnx:
-            if not isinstance(item, dict):
-                normalized.append([])
-                continue
-            raw_dets = detections_from_onnx_frame_payload(item, conf_fallback=conf_fb)
-            normalized.append(_normalize_detection_frame_rows(raw_dets))
-        frontend_detections_by_frame = normalized
-
-    elif frontend_detections_json:
+    if frontend_detections_json:
         try:
             parsed = json.loads(frontend_detections_json)
         except Exception:
@@ -138,18 +116,11 @@ async def capture_track_and_ocr(
         for frame in parsed:
             normalized.append(_normalize_detection_frame_rows(frame if isinstance(frame, list) else []))
         frontend_detections_by_frame = normalized
-
-    if not frontend_detections_by_frame:
-        raise HTTPException(
-            status_code=400,
-            detail="frontend_onnx_outputs_json(ONNX raw 텐서·meta) 또는 frontend_detections_json 중 하나가 필요합니다.",
-        )
-
-    if len(frontend_detections_by_frame) != len(files):
-        raise HTTPException(
-            status_code=400,
-            detail=f"프레임 수 불일치: 이미지 {len(files)}장, 탐지/ONNX 배열 {len(frontend_detections_by_frame)}개",
-        )
+        if len(frontend_detections_by_frame) != len(files):
+            raise HTTPException(
+                status_code=400,
+                detail=f"프레임 수 불일치: 이미지 {len(files)}장, 탐지 배열 {len(frontend_detections_by_frame)}개",
+            )
 
     _cleanup_old_jobs()
     job_id = uuid.uuid4().hex
@@ -207,6 +178,7 @@ async def capture_track_and_ocr(
             has_double_potion_hint=parsed_has_double_potion_hint,
             scan_hint=parsed_scan_hint,
             frontend_detections_by_frame=frontend_detections_by_frame,
+            detector_conf_fallback=detector_conf_fallback,
         )
     )
     return {

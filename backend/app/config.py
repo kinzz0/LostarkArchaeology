@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 # 프로젝트 루트 경로
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -59,7 +59,38 @@ OCR_CROP_UPSCALE_MAX_SIDE = _int_env("OCR_CROP_UPSCALE_MAX_SIDE", 1920)
 # 추적+OCR 적용할 라벨 (이 라벨에만 crop 후 OCR 수행)
 OCR_TARGET_LABELS = {"common_item", "uncommon_item", "rare_item"}
 
-# 클래스 id → 라벨 (프론트 ONNX / data.yaml 과 동일 순서 참고용; 백엔드는 추론하지 않음)
+# Ultralytics YOLO-OBB: .pt 또는 export .onnx (task=obb). 미설정 시 backend/models/best.pt
+YOLO_MODEL_PATH = Path(os.getenv("YOLO_MODEL_PATH", str(BASE_DIR / "models" / "best.pt")))
+# 추론 디바이스 (기본 cpu). GPU 사용 시 예: cuda:0
+YOLO_DEVICE = os.getenv("YOLO_DEVICE", "cpu").strip() or "cpu"
+
+# track-ocr·/detect 에서 라벨별 최소 confidence (미정의 라벨은 YOLO_DETECT_CONF_FALLBACK)
+YOLO_DETECT_CONF_FALLBACK = _float_env("YOLO_DETECT_CONF_FALLBACK", 0.5)
+DETECTION_CONFIDENCE_THRESHOLDS: Dict[str, float] = {
+    "common": 0.7,
+    "uncommon": 0.7,
+    "normal": 0.6,
+    "chest": 0.5,
+    "mini": 0.8,
+    "gauge": 0.8,
+    "chat": 0.9,
+    "skill_on": 0.9,
+    "skill_off": 0.9,
+    "skill_popup": 0.9,
+    "common_item": 0.75,
+    "uncommon_item": 0.75,
+    "rare_item": 0.75,
+    "double_potion": 0.8,
+    "action_gauge": 0.8,
+}
+
+
+def get_label_confidence_threshold(label: str, fallback: float) -> float:
+    v = DETECTION_CONFIDENCE_THRESHOLDS.get(label)
+    return float(v) if isinstance(v, (int, float)) else float(fallback)
+
+
+# 클래스 id → 라벨 (학습 data.yaml 순서와 동일)
 DETECTION_CLASSES = {
     0: "common",
     1: "uncommon",
