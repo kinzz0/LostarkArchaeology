@@ -686,7 +686,8 @@ async def _process_track_and_ocr(
             if not ok_enc:
                 raise ValueError("crop png encode failed")
             png_bytes = buf.tobytes()
-            storage_path = f"track_ocr/crops/{crop_filename}"
+            # Supabase crops 버킷은 루트에 파일명만 저장 (로컬 폴백은 아래 track_ocr/crops 유지)
+            storage_path = crop_filename
             public_url = None
             if use_supabase_crops:
                 public_url = await upload_track_ocr_crop_png(storage_path, png_bytes)

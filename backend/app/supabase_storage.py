@@ -42,7 +42,7 @@ def _upload_png_sync(object_path: str, png_bytes: bytes) -> str:
 
 def get_track_ocr_crop_public_url(image_filename: Optional[str]) -> Optional[str]:
     """
-    업로드 경로와 동일하게 `track_ocr/crops/{파일명}` 에 대해 get_public_url 로 절대 URL 조합.
+    crops 버킷 루트에 `{파일명}` 으로 올린 객체와 동일 경로로 get_public_url 절대 URL 조합.
     DB에 image_storage_url 이 없어도 스토리지에 객체만 있으면 관리자 썸네일에 사용 가능.
     """
     if not image_filename or not supabase_crops_configured():
@@ -53,14 +53,14 @@ def get_track_ocr_crop_public_url(image_filename: Optional[str]) -> Optional[str
     client = _sync_client()
     if client is None:
         return None
-    object_path = f"track_ocr/crops/{safe}"
+    object_path = safe
     pub = client.storage.from_(SUPABASE_CROPS_BUCKET).get_public_url(object_path)
     return str(pub).rstrip("?")
 
 
 async def upload_track_ocr_crop_png(object_path: str, png_bytes: bytes) -> Optional[str]:
     """
-    크롭 PNG를 버킷에 올리고 공개 URL 반환.
+    크롭 PNG를 crops 버킷 object_path(보통 루트 파일명)로 올리고 공개 URL 반환.
     설정이 없거나 실패 시 None (호출측에서 로컬 저장 폴백).
     """
     if not supabase_crops_configured():
