@@ -143,7 +143,14 @@ export async function testNumberOcr(file) {
 /**
  * 여러 프레임을 보내 track-ocr 백그라운드 작업 등록
  * @param {File[]} files - 이미지 파일 배열 (최소 2개)
- * @param {{ actionHint?: string, scanHint?: string|null, hasDoublePotionHint?: boolean|null }} options
+ * @param {{
+ *   actionHint?: string,
+ *   scanHint?: string|null,
+ *   hasDoublePotionHint?: boolean|null,
+ *   frontendOnnxOutputs?: Array<{ meta: object, pred_dims: number[], pred_data_b64: string }>,
+ *   frontendDetections?: unknown[][],
+ *   onnxConfFallback?: string|number,
+ * }} options
  */
 export async function startTrackAndOcr(files, options = {}) {
   const formData = new FormData()
@@ -157,8 +164,14 @@ export async function startTrackAndOcr(files, options = {}) {
   if (typeof options.hasDoublePotionHint === 'boolean') {
     formData.append('has_double_potion_hint', options.hasDoublePotionHint ? '1' : '0')
   }
+  if (Array.isArray(options.frontendOnnxOutputs)) {
+    formData.append('frontend_onnx_outputs_json', JSON.stringify(options.frontendOnnxOutputs))
+  }
   if (Array.isArray(options.frontendDetections)) {
     formData.append('frontend_detections_json', JSON.stringify(options.frontendDetections))
+  }
+  if (options.onnxConfFallback != null && options.onnxConfFallback !== '') {
+    formData.append('onnx_conf_fallback', String(options.onnxConfFallback))
   }
 
   const response = await fetch(`${API_BASE}/capture/track-and-ocr`, {
@@ -196,6 +209,8 @@ export async function trackAndOcr(files, options = {}) {
   const scanHint = options.scanHint
   const hasDoublePotionHint = options.hasDoublePotionHint
   const frontendDetections = options.frontendDetections
+  const frontendOnnxOutputs = options.frontendOnnxOutputs
+  const onnxConfFallback = options.onnxConfFallback
   const startedAt = Date.now()
 
   const queued = await startTrackAndOcr(files, {
@@ -203,6 +218,8 @@ export async function trackAndOcr(files, options = {}) {
     scanHint,
     hasDoublePotionHint,
     frontendDetections,
+    frontendOnnxOutputs,
+    onnxConfFallback,
   })
   const jobId = queued?.job_id
   if (!jobId) {

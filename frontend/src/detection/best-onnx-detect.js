@@ -226,7 +226,7 @@ function parseEndToEndBCN(tensor, meta, confFallback) {
   })()
 
   const { inW, inH, origW, origH, r, dw, dh } = meta
-  const raw = []
+  const candidates = []
   for (let i = 0; i < num; i++) {
     let x1 = data[ox(i, 0)]
     let y1 = data[ox(i, 1)]
@@ -251,20 +251,38 @@ function parseEndToEndBCN(tensor, meta, confFallback) {
       x1,
       y2,
     ]
-    const bbox = unletterboxCorners(flatLb, { r, dw, dh, origW, origH, inW, inH })
     const classId = Math.round(cls)
     const label = labelForClassId(classId)
     const th = minConfidenceForLabel(label, confFallback)
     if (conf < th) continue
-    raw.push({
+    const aabbNet = aabbFromCorners8(flatLb)
+    candidates.push({
       label,
       confidence: Math.round(conf * 10000) / 10000,
-      bbox,
       class_id: classId,
       obb: true,
+      _aabb: aabbNet,
+      _cls: classId,
+      _flatLb: flatLb,
     })
   }
-  return raw
+  if (candidates.length === 0) return []
+  const boxes = candidates.map((c) => c._aabb)
+  const scores = candidates.map((c) => c.confidence)
+  const classIds = candidates.map((c) => c._cls)
+  const keep = nmsAabbClassAware(boxes, scores, classIds, 0.45, 300)
+  const metaFull = { r, dw, dh, origW, origH, inW, inH }
+  return keep.map((k) => {
+    const c = candidates[k]
+    const bbox = unletterboxCorners(c._flatLb, metaFull)
+    return {
+      label: c.label,
+      confidence: c.confidence,
+      bbox,
+      class_id: c.class_id,
+      obb: c.obb,
+    }
+  })
 }
 
 /**
@@ -374,4 +392,52 @@ export async function detectWithBestOnnx(file, opts = {}) {
   }
 
   return parseYoloBcnRaw(pred, meta, confFallback, undefined)
+}
+
+/** Float32Array → base64 (track-and-ocr ONNX raw 전송용) */
+export function float32ToBase64(f32) {
+  const u8 = new Uint8Array(f32.buffer, f32.byteOffset, f32.byteLength)
+  let binary = ""
+  const chunk = 0x8000
+  for (let i = 0; i < u8.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, u8.subarray(i, i + chunk))
+  }
+  return btoa(binary)
+}
+
+/** 추론 실패 시에도 프레임 인덱스를 맞추기 위한 빈 페이로드 */
+export const EMPTY_ONNX_FRAME_PAYLOAD = Object.freeze({
+  meta: { r: 1, dw: 0, dh: 0, origW: 1, origH: 1, inW: 640, inH: 640 },
+  pred_dims: [],
+  pred_data_b64: "",
+})
+
+/**
+ * ONNX session.run()까지 수행 후, 백엔드 `onnx_postprocess`용 raw 텐서+meta (박스 후처리 없음).
+ * @returns {Promise<{ meta: object, pred_dims: number[], pred_data_b64: string } | null>}
+ */
+export async function inferBestOnnxFramePayload(file) {
+  const session = await loadBestOnnxSession()
+  const { inputName, h: inH, w: inW } = resolveInputSize(session)
+  const bitmap = await createImageBitmap(file)
+  const { tensor, meta } = letterboxToTensor(bitmap, inW, inH)
+  bitmap.close?.()
+  const outputs = await session.run({ [inputName]: tensor })
+  const pred = pickMainOutput(session, outputs)
+  if (!pred?.dims?.length) return null
+  const data = pred.data
+  const f32 = data instanceof Float32Array ? data : Float32Array.from(data)
+  return {
+    meta: {
+      r: meta.r,
+      dw: meta.dw,
+      dh: meta.dh,
+      origW: meta.origW,
+      origH: meta.origH,
+      inW: meta.inW,
+      inH: meta.inH,
+    },
+    pred_dims: [...pred.dims],
+    pred_data_b64: float32ToBase64(f32),
+  }
 }

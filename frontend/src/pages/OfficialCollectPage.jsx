@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
+  EMPTY_ONNX_FRAME_PAYLOAD,
+  inferBestOnnxFramePayload,
+} from '../detection/best-onnx-detect.js'
+import {
   detectImage,
   getAuthMe,
   getDbActionTypes,
@@ -41,11 +45,6 @@ function queueStatusLabel(status) {
   if (status === 'running') return '처리 중'
   if (status === 'queued') return '대기'
   return status || '대기'
-}
-
-async function inferDetectionsForFile(file) {
-  const res = await detectImage(file, { timeoutMs: DETECT_TIMEOUT_MS })
-  return Array.isArray(res?.detections) ? res.detections : []
 }
 
 function AnalysisQueuePanel({ jobs, collecting, sharing }) {
@@ -255,9 +254,10 @@ function OfficialCollectPage() {
     setSharing(false)
   }, [])
 
-  const enqueueAnalysisJob = useCallback(async (files, frontendDetections = null) => {
+  const enqueueAnalysisJob = useCallback(async (files, frontendOnnxOutputs = null) => {
     const queued = await startTrackAndOcr(files, {
-      frontendDetections: Array.isArray(frontendDetections) ? frontendDetections : undefined,
+      frontendOnnxOutputs: Array.isArray(frontendOnnxOutputs) ? frontendOnnxOutputs : undefined,
+      onnxConfFallback: 0.5,
     })
     const jobId = queued?.job_id
     if (!jobId) throw new Error('분석 작업 등록 실패: job_id 없음')
@@ -342,7 +342,7 @@ function OfficialCollectPage() {
       canvas.height = h
     }
     const files = []
-    const frontendDetections = []
+    const frontendOnnxOutputs = []
     const started = Date.now()
     let idx = 0
     while (Date.now() - started < ms) {
@@ -352,13 +352,12 @@ function OfficialCollectPage() {
       if (f) {
         files.push(f)
         try {
-          // 프론트 모델(있으면) 또는 기존 detect API 결과를 프레임별로 함께 수집.
-          // 백엔드는 이 배열을 받아 재탐지 없이 OCR/집계를 수행할 수 있다.
+          // ONNX 추론만 프론트 — 박스·라벨·점수는 백엔드 onnx_postprocess.
           // eslint-disable-next-line no-await-in-loop
-          const dets = await inferDetectionsForFile(f)
-          frontendDetections.push(Array.isArray(dets) ? dets : [])
+          const payload = await inferBestOnnxFramePayload(f)
+          frontendOnnxOutputs.push(payload ?? { ...EMPTY_ONNX_FRAME_PAYLOAD })
         } catch {
-          frontendDetections.push([])
+          frontendOnnxOutputs.push({ ...EMPTY_ONNX_FRAME_PAYLOAD })
         }
       }
       // eslint-disable-next-line no-await-in-loop
@@ -376,7 +375,7 @@ function OfficialCollectPage() {
     setCollecting(false)
     collectingRef.current = false
     setStatus('분석 큐 등록 중..')
-    void enqueueAnalysisJob(files, frontendDetections).catch((e) => {
+    void enqueueAnalysisJob(files, frontendOnnxOutputs).catch((e) => {
       setStatus(e.message || '수집/저장 실패')
     })
   }, [enqueueAnalysisJob, fileFromCanvas])
