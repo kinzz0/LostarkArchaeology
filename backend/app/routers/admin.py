@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import resolve_public_asset_url
 from app.database import get_db
+from app.supabase_storage import get_track_ocr_crop_public_url
 from app.models.db_models import ActionType, Run, RunItem, ScanResult, User, UserToolSpec
 from app.routers import auth as auth_router
 
@@ -231,7 +232,9 @@ async def admin_run_items(
         if getattr(r, "image_storage_url", None):
             image_url = str(r.image_storage_url).strip() or None
         elif r.image_filename:
-            image_url = f"/static/track_ocr/crops/{r.image_filename}"
+            image_url = get_track_ocr_crop_public_url(r.image_filename)
+            if not image_url:
+                image_url = f"/static/track_ocr/crops/{r.image_filename}"
         key = str(r.run_id)
         mp = getattr(r, "_mapping", None)
         if mp is not None:
