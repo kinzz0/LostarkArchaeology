@@ -4,7 +4,6 @@
 export const runtimeConfig = {
   apiBaseUrl: import.meta.env.VITE_API_BASE_URL || "/api",
   modalEasyocrUrl: import.meta.env.VITE_MODAL_EASYOCR_URL || "",
-  onnxBestUrl: import.meta.env.VITE_ONNX_BEST_URL || "/models/best.onnx",
   supabaseUrl: import.meta.env.VITE_SUPABASE_URL || "",
   supabaseAnonKey: import.meta.env.VITE_SUPABASE_ANON_KEY || "",
 }

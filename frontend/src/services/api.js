@@ -1,26 +1,4 @@
-import { detectWithBestOnnx } from '../detection/best-onnx-detect.js'
-import { scanResultAndConfidenceFromDetections } from '../detection/scan-from-detections.js'
-import { loadBestOnnxSession } from '../../onnx-loader.js'
-
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api'
-
-function withDetectTimeout(promise, timeoutMs, message) {
-  const ms = Number(timeoutMs)
-  if (!ms || ms <= 0) return promise
-  return new Promise((resolve, reject) => {
-    const t = window.setTimeout(() => reject(new Error(message || `탐지 타임아웃(${ms}ms)`)), ms)
-    promise.then(
-      (v) => {
-        window.clearTimeout(t)
-        resolve(v)
-      },
-      (e) => {
-        window.clearTimeout(t)
-        reject(e)
-      }
-    )
-  })
-}
 
 /**
  * 이미지 파일을 서버에 업로드하고 OCR 분석 결과를 받아옴
@@ -98,25 +76,39 @@ export async function getCollectedData(page = 1, limit = 20) {
 }
 
 /**
- * 브라우저 ONNX(best.onnx)로 객체 탐지 (저장 없음, 서버 /detect 미사용)
- * @param {File|Blob} file
- * @param {{ timeoutMs?: number, confFallback?: number }} [options]
- * @returns {Promise<{ detections: Array, scan_result: string|null, scan_confidence: number|null }>}
+ * 이미지에서 객체 탐지만 수행 (저장 없음)
+ * @param {File} file - 탐지할 이미지 파일
+ * @returns {Promise<{ detections: Array, scan_result?: string|null, scan_confidence?: number|null }>}
+ *   scan_result: infer와 동일 — common/uncommon 박스 개수 다수결. scan_confidence는 선택된 라벨 박스 중 최대 confidence
  */
 export async function detectImage(file, options = {}) {
   const timeoutMs = Number(options?.timeoutMs ?? 2000)
-  const confFallback = Number(options?.confFallback ?? 0.5)
-  const detections = await withDetectTimeout(
-    detectWithBestOnnx(file, { confFallback }),
-    timeoutMs,
-    `탐지 타임아웃(${timeoutMs}ms)`
-  )
-  const { scan_result, scan_confidence } = scanResultAndConfidenceFromDetections(detections)
-  return {
-    detections,
-    scan_result,
-    scan_confidence,
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs)
+  let response
+  try {
+    response = await fetch(`${API_BASE}/detect`, {
+      method: 'POST',
+      body: formData,
+      signal: controller.signal,
+    })
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      throw new Error(`탐지 타임아웃(${timeoutMs}ms)`)
+    }
+    throw e
+  } finally {
+    window.clearTimeout(timer)
   }
+
+  if (!response.ok) {
+    throw new Error(`탐지 실패: ${response.status}`)
+  }
+
+  return response.json()
 }
 
 /**
@@ -147,9 +139,8 @@ export async function testNumberOcr(file) {
  *   actionHint?: string,
  *   scanHint?: string|null,
  *   hasDoublePotionHint?: boolean|null,
- *   frontendOnnxOutputs?: Array<{ meta: object, pred_dims: number[], pred_data_b64: string }>,
+ *   yoloConfFallback?: string|number,
  *   frontendDetections?: unknown[][],
- *   onnxConfFallback?: string|number,
  * }} options
  */
 export async function startTrackAndOcr(files, options = {}) {
@@ -164,14 +155,11 @@ export async function startTrackAndOcr(files, options = {}) {
   if (typeof options.hasDoublePotionHint === 'boolean') {
     formData.append('has_double_potion_hint', options.hasDoublePotionHint ? '1' : '0')
   }
-  if (Array.isArray(options.frontendOnnxOutputs)) {
-    formData.append('frontend_onnx_outputs_json', JSON.stringify(options.frontendOnnxOutputs))
+  if (options.yoloConfFallback != null && options.yoloConfFallback !== '') {
+    formData.append('yolo_conf_fallback', String(options.yoloConfFallback))
   }
   if (Array.isArray(options.frontendDetections)) {
     formData.append('frontend_detections_json', JSON.stringify(options.frontendDetections))
-  }
-  if (options.onnxConfFallback != null && options.onnxConfFallback !== '') {
-    formData.append('onnx_conf_fallback', String(options.onnxConfFallback))
   }
 
   const response = await fetch(`${API_BASE}/capture/track-and-ocr`, {
@@ -208,18 +196,16 @@ export async function trackAndOcr(files, options = {}) {
   const actionHint = options.actionHint
   const scanHint = options.scanHint
   const hasDoublePotionHint = options.hasDoublePotionHint
+  const yoloConfFallback = options.yoloConfFallback
   const frontendDetections = options.frontendDetections
-  const frontendOnnxOutputs = options.frontendOnnxOutputs
-  const onnxConfFallback = options.onnxConfFallback
   const startedAt = Date.now()
 
   const queued = await startTrackAndOcr(files, {
     actionHint,
     scanHint,
     hasDoublePotionHint,
+    yoloConfFallback,
     frontendDetections,
-    frontendOnnxOutputs,
-    onnxConfFallback,
   })
   const jobId = queued?.job_id
   if (!jobId) {
@@ -313,11 +299,15 @@ export async function checkHealth() {
 }
 
 /**
- * 브라우저 ONNX 세션 프리로드 (첫 탐지 전). 화면 공유 직후 게이지 기준선 등에서 호출.
+ * YOLO 모델 싱글톤 로드 완료(첫 /detect 전). 화면 공유 직후 게이지 기준선 OCR 전에 호출.
  */
 export async function warmupDetectModel() {
-  await loadBestOnnxSession()
-  return { ok: true, model_ready: true, frontend_model_mode: true }
+  const response = await fetch(`${API_BASE}/detect/warmup`, { method: 'POST' })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.detail || `모델 워밍업 실패: ${response.status}`)
+  }
+  return response.json()
 }
 
 /** 디스코드 OAuth 로그인 시작 URL */
