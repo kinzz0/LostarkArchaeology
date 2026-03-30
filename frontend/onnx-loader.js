@@ -1,10 +1,14 @@
 import * as ort from "onnxruntime-web"
 import { runtimeConfig } from "./runtime-config.js"
 
-/** Vite dev에서 로컬 node_modules WASM 해석이 어긋날 때 CDN으로 폴백 */
-const ORT_WASM_VER = "1.20.1"
+/**
+ * WASM은 Vite 플러그인(copy-ort-wasm-to-public)이 node_modules/onnxruntime-web/dist 에서
+ * public/ort-wasm/ 로 복사 — 번들된 ort JS와 항상 같은 패키지 버전.
+ */
 if (typeof window !== "undefined") {
-  ort.env.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_WASM_VER}/dist/`
+  const base = import.meta.env.BASE_URL ?? "/"
+  const prefix = base.endsWith("/") ? base : `${base}/`
+  ort.env.wasm.wasmPaths = `${window.location.origin}${prefix}ort-wasm/`
 }
 
 let cachedSession = null

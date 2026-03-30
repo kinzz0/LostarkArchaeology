@@ -1,0 +1,877 @@
+import React, { useRef, useEffect, useState } from 'react';
+import Tesseract from 'tesseract.js';
+import axios from 'axios';
+
+const API_URL = import.meta.env.VITE_API_URL; 
+
+function majorityVote(numbers) {
+  const filtered = numbers.filter((n) => typeof n === 'number' && !isNaN(n));
+  if (filtered.length === 0) return 0;
+  const counts = {};
+  filtered.forEach((n) => {
+    counts[n] = (counts[n] || 0) + 1;
+  });
+  let best = filtered[0];
+  let bestCount = 0;
+  Object.entries(counts).forEach(([n, c]) => {
+    const num = parseInt(n, 10);
+    if (c > bestCount) {
+      bestCount = c;
+      best = num;
+    }
+  });
+  return best;
+}
+
+function openingBlack(imgData) {
+    const eroded = erodeBlack(imgData);
+    const opened = dilateBlack(eroded);
+    return opened;
+  }
+  function erodeBlack(imgData) {
+    const { width, height, data } = imgData;
+    const out = new ImageData(width, height);
+    out.data.set(data);
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const i = (y * width + x) * 4;
+        if (data[i] !== 0) continue;
+        let hasWhite = false;
+        for (let dy = -1; dy <= 1 && !hasWhite; dy++)
+          for (let dx = -1; dx <= 1 && !hasWhite; dx++) {
+            const ni = ((y + dy) * width + (x + dx)) * 4;
+            if (data[ni] === 255) hasWhite = true;
+          }
+        if (hasWhite) out.data[i] = out.data[i+1] = out.data[i+2] = 255;
+      }
+    }
+    return out;
+  }
+
+// 검은 픽셀을 3x3으로 한 겹 확장 (획 두껍게, 2→7 오인식 감소)
+function dilateBlack(imgData) {
+    const { width, height, data } = imgData;
+    const out = new ImageData(width, height);
+    out.data.set(data);
+  
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const i = (y * width + x) * 4;
+        if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 0) continue;
+  
+        let hasBlack = false;
+        for (let dy = -1; dy <= 1 && !hasBlack; dy++) {
+          for (let dx = -1; dx <= 1 && !hasBlack; dx++) {
+            const ni = ((y + dy) * width + (x + dx)) * 4;
+            if (data[ni] === 0 && data[ni + 1] === 0 && data[ni + 2] === 0) hasBlack = true;
+          }
+        }
+        if (hasBlack) {
+          out.data[i] = out.data[i + 1] = out.data[i + 2] = 0;
+        } else {
+          out.data[i] = out.data[i + 1] = out.data[i + 2] = 255;
+        }
+      }
+    }
+    return out;
+  }
+
+// ---------- 1) 템플릿 이미지 로드 (컴포넌트 상단 또는 Test 밖에 함수 정의) ----------
+function loadTemplateImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('템플릿 이미지 로드 실패'));
+    img.src = src;
+  });
+}
+
+// ---------- 2) 그레이스케일 픽셀 배열로 변환 (R 채널만 사용) ----------
+function imageToGrayData(img, width, height) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, width, height);
+  const imgData = ctx.getImageData(0, 0, width, height);
+  const data = imgData.data;
+  const gray = new Uint8Array(width * height);
+  for (let i = 0; i < gray.length; i++) {
+    gray[i] = (data[i * 4] + data[i * 4 + 1] + data[i * 4 + 2]) / 3;
+  }
+  return gray;
+}
+
+// ---------- 3) 단순 템플릿 매칭 (SSD 최소 위치 반환) ----------
+function matchTemplate(sceneData, sceneW, sceneH, templateData, templateW, templateH, maxScore = Infinity) {
+  let bestX = 0, bestY = 0, bestScore = Infinity;
+  const maxX = sceneW - templateW;
+  const maxY = sceneH - templateH;
+  if (maxX <= 0 || maxY <= 0) return null;
+
+  for (let y = 0; y <= maxY; y += 2) {
+    for (let x = 0; x <= maxX; x += 2) {
+      let ssd = 0;
+      for (let ty = 0; ty < templateH; ty++) {
+        for (let tx = 0; tx < templateW; tx++) {
+          const si = ((y + ty) * sceneW + (x + tx)) * 4;
+          const ti = ty * templateW + tx;
+          const sr = (sceneData[si] + sceneData[si + 1] + sceneData[si + 2]) / 3;
+          const diff = sr - templateData[ti];
+          ssd += diff * diff;
+        }
+      }
+      if (ssd < bestScore) {
+        bestScore = ssd;
+        bestX = x;
+        bestY = y;
+      }
+    }
+  }
+  if (bestScore > maxScore) return null;   // ← 이 줄 추가 (return 바로 위)
+  return { x: bestX, y: bestY, w: templateW, h: templateH };
+}
+
+function drawMatchBox(ctx, x, y, w, h, style = { stroke: '#00ff00', lineWidth: 3 }) {
+  ctx.strokeStyle = style.stroke;
+  ctx.lineWidth = style.lineWidth;
+  ctx.strokeRect(x, y, w, h);
+}
+
+
+// OCR 직전 2배 확대 (얇은 숫자 2→7 오인식 감소)
+function canvasToDataURLUpscaled(canvas, scale = 2) {
+  const w = canvas.width;
+  const h = canvas.height;
+  const temp = document.createElement('canvas');
+  temp.width = w * scale;
+  temp.height = h * scale;
+  const ctx = temp.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, temp.width, temp.height);
+  ctx.drawImage(canvas, 0, 0, w, h, 0, 0, w * scale, h * scale);
+  return temp.toDataURL('image/png');
+}
+
+function Test() {
+  
+  const canvasRef1 = useRef(null);
+  const canvasRef2 = useRef(null);
+  const canvasRef3 = useRef(null);
+  const canvasRef4 = useRef(null);  
+  const canvasRef5 = useRef(null);
+
+  const intervalRef = useRef(null);
+
+  const videoRef = useRef(null);
+  //const canvasRefs = [useRef(null), useRef(null), useRef(null), useRef(null)];
+  const [status, setStatus] = useState("대기 중");
+  const [logs, setLogs] = useState([]);
+  // 제어용 Refs
+  const loopRef = useRef(null);
+  const rafRef = useRef(null);
+  const workerRef = useRef(null);
+  const streamRef = useRef(null); // 스트림 정지용
+
+  // 데이터 기록용 Refs
+  const lastGauge = useRef(0);
+  const lastCounts = useRef([0, 0, 0]);
+  const isInitialized = useRef(false);
+
+  const tfReadyRef = useRef(false);
+  const [tfStatus, setTfStatus] = useState('');
+
+  const templateListRef = useRef(null);  // [{ data, w, h }, ...] 3개
+  const matchBoxesRef = useRef([]);      // [{ x, y, w, h }, ...] 매칭 결과 3개
+  const matchFrameRef = useRef(0);
+
+  const cropCanvasRef = useRef(null);  // 숫자 영역만 잘라서 그리기용
+  
+  const startCapture = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      streamRef.current = stream;
+      videoRef.current.srcObject = stream;
+
+      streamRef.current.getVideoTracks()[0].onended = () => {
+        stopCapture();
+      };
+      setStatus("분석 중...");
+
+      // 템플릿 3개 한 번만 로드 (drawFrames 밖에서)
+      try {
+        const templatePaths = ['/template1.png', '/template2.png', '/template3.png'];
+        const list = [];
+        for (const path of templatePaths) {
+          const templateImg = await loadTemplateImage(path);
+          const tw = templateImg.width;
+          const th = templateImg.height;
+          const small = document.createElement('canvas');
+          small.width = tw;
+          small.height = th;
+          small.getContext('2d').drawImage(templateImg, 0, 0, tw, th);
+          const smallData = small.getContext('2d').getImageData(0, 0, tw, th);
+          const templateGray = new Uint8Array(tw * th);
+          for (let i = 0; i < templateGray.length; i++) {
+            templateGray[i] = (smallData.data[i * 4] + smallData.data[i * 4 + 1] + smallData.data[i * 4 + 2]) / 3;
+          }
+          list.push({ data: templateGray, w: tw, h: th });
+        }
+        templateListRef.current = list;
+        if (list.length >= 3) {
+          canvasRef1.current.width = list[0].w;
+          canvasRef1.current.height = list[0].h;
+          canvasRef2.current.width = list[1].w;
+          canvasRef2.current.height = list[1].h;
+          canvasRef3.current.width = list[2].w;
+          canvasRef3.current.height = list[2].h;
+        }
+
+      } catch (e) {
+        console.warn('템플릿 이미지 로드 실패, 매칭 비활성화:', e);
+        templateListRef.current = null;
+      }
+
+      const drawFrames = () => {
+        const video = videoRef.current;
+        if (!video || video.readyState !== video.HAVE_ENOUGH_DATA) {
+          rafRef.current = requestAnimationFrame(drawFrames);
+          return;
+        }
+
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+
+        const contexts = [
+          canvasRef1.current.getContext('2d', { willReadFrequently: true }),
+          canvasRef2.current.getContext('2d', { willReadFrequently: true }),
+          canvasRef3.current.getContext('2d', { willReadFrequently: true }),
+          canvasRef4.current.getContext('2d', { willReadFrequently: true }),
+          canvasRef5.current.getContext('2d', { willReadFrequently: true })
+        ].filter(Boolean);
+
+        contexts.forEach((ctx, i) => {
+          const width = i < 4 ? 800 : 300;
+          const height = i < 3 ? 200 : 30;
+          
+          if (i === 4) {
+            ctx.filter = 'none';
+            ctx.drawImage(video, vw * 0.7, vh * 0.5 - 240, 200, 400, 0, 0, 300, 400);
+          } else {
+            ctx.filter = 'contrast(180%) brightness(180%) grayscale(100%)';
+            if (i < 3) {
+              const t = templateListRef.current && templateListRef.current[i];
+              const tw = t ? t.w : 80;
+              const th = t ? t.h : 80;
+              const offsetX = [0.01, 0.01 + 100/vw, 0.01 + 250/vw];
+              ctx.drawImage(video, vw * offsetX[i] - 8, vh * 0.7 - 17, tw-16, th-20, 0, 0, tw, th);
+            } else if (i === 3) {
+              ctx.drawImage(video, vw * 0.5 - 45, vh * 0.84 + 10, 90, 15, 0, 0, 200, 30);
+            } 
+          }
+
+          ctx.filter = 'none';
+          const t = (i < 3 && templateListRef.current && templateListRef.current[i]) ? templateListRef.current[i] : null;
+          const cw = t ? t.w : 400;
+          const ch = t ? t.h : 150;
+          const imgData = (i < 3 ? ctx.getImageData(0, 0, cw, ch) :
+            (i === 3 ? ctx.getImageData(0, 0, 200, 30) : null)) ||
+            (i === 4 ? ctx.getImageData(0, 0, 300, 400) : null);
+
+          const data = imgData ? imgData.data : null;
+
+          if (i < 3) {
+            const tw = t ? t.w : 400;
+            const th = t ? t.h : 150;
+            const templateData = t ? t.data : null;
+            const matchThreshold = 100;
+          
+            // 1) 매칭된 부분(아이콘) 제거 → 배경이 되도록 0으로 설정 (이진화 후 255가 됨)
+            if (templateData && templateData.length === data.length / 4) {
+              for (let k = 0; k < tw * th; k++) {
+                const sceneGray = (data[k * 4] + data[k * 4 + 1] + data[k * 4 + 2]) / 3;
+                const diff = Math.abs(sceneGray - templateData[k]);
+                if (diff <= matchThreshold) {
+                  data[k * 4] = data[k * 4 + 1] = data[k * 4 + 2] = 0;
+                }
+              }
+            }
+          
+            // 2) 숫자만 남기기: 흰색(숫자) → 검정(0), 나머지 → 흰색(255) 배경
+            for (let j = 0; j < data.length; j += 4) {
+              const isWhite = data[j] > 210 && data[j + 1] > 210 && data[j + 2] > 210;
+              if (isWhite) {
+                data[j] = data[j + 1] = data[j + 2] = 0;
+              } else {
+                data[j] = data[j + 1] = data[j + 2] = 255;
+              }
+            }
+
+            const cropX = Math.floor(tw * 0.5); 
+            const cropY = 0;
+            const cropW = Math.floor(tw * 0.5);
+            const cropH = Math.floor(th * 0.5);
+
+            if (cropW > 0 && cropH > 0) {
+              const cropped = new ImageData(cropW, cropH);
+              for (let cy = 0; cy < cropH; cy++) {
+                for (let cx = 0; cx < cropW; cx++) {
+                  const srcK = ((cropY + cy) * tw + (cropX + cx)) * 4;
+                  const dstK = (cy * cropW + cx) * 4;
+                  cropped.data[dstK] = data[srcK];
+                  cropped.data[dstK + 1] = data[srcK + 1];
+                  cropped.data[dstK + 2] = data[srcK + 2];
+                  cropped.data[dstK + 3] = data[srcK + 3];
+                }
+              }
+
+              if (!cropCanvasRef.current || cropCanvasRef.current.width < cropW || cropCanvasRef.current.height < cropH) {
+                cropCanvasRef.current = document.createElement('canvas');
+              }
+              const cropCanvas = cropCanvasRef.current;
+              cropCanvas.width = cropW;
+              cropCanvas.height = cropH;
+              const cropCtx = cropCanvas.getContext('2d');
+              cropCtx.putImageData(cropped, 0, 0);
+
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, tw, th);
+              ctx.drawImage(cropCanvas, 0, 0, cropW, cropH, 0, 0, tw, th);
+            } else {
+              ctx.putImageData(imgData, 0, 0);
+            }
+
+          } else if (i === 3) {
+            for (let j = 0; j < data.length; j += 4) {
+              const b = data[j];
+              const r = data[j];
+              const g = data[j + 1];
+              if (r > 200 && g > 200 && b > 200) {
+                data[j] = data[j + 1] = data[j + 2] = 0;
+              } else {
+                data[j] = data[j + 1] = data[j + 2] = 255;
+              }
+            }
+            ctx.putImageData(imgData, 0, 0);
+          } else {
+            ctx.putImageData(imgData, 0, 0);
+          }
+        });
+        rafRef.current = requestAnimationFrame(drawFrames);
+      };
+
+      rafRef.current = requestAnimationFrame(drawFrames);
+      intervalRef.current = setInterval(analyzeFrames, 3000);
+
+      const sendFrameToBackend = async () => {
+        const video = videoRef.current;
+        if (!video || video.readyState !== video.HAVE_ENOUGH_DATA || !streamRef.current) return;
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        if (vw === 0 || vh === 0) return;
+        if (!frameSendCanvasRef.current) {
+          frameSendCanvasRef.current = document.createElement('canvas');
+        }
+        const c = frameSendCanvasRef.current;
+        c.width = vw;
+        c.height = vh;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(video, 0, 0, vw, vh, 0, 0, vw, vh);
+        const dataUrl = c.toDataURL('image/jpeg', 0.6);
+        try {
+          await fetch(`${API_URL}/api/frame`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image: dataUrl }),
+          });
+        } catch (e) {
+          console.warn('프레임 전송 실패:', e);
+        }
+      };
+      frameSendIntervalRef.current = setInterval(sendFrameToBackend, 300);
+    } catch (err) {
+      console.error("화면 공유 실패:", err);
+    }
+  };
+  // const startCapture = async () => {
+  //   try {
+  //     const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+  //     streamRef.current = stream; 
+  //     videoRef.current.srcObject = stream;
+  
+  //     streamRef.current.getVideoTracks()[0].onended = () => {
+  //       stopCapture();
+  //     };
+  //     setStatus("분석 중...");
+  
+  //     const drawFrames = () => {
+  //       const video = videoRef.current;
+  //       if (!video || video.readyState !== video.HAVE_ENOUGH_DATA) {
+  //         rafRef.current = requestAnimationFrame(drawFrames);
+  //         return;
+  //       }
+        
+  //       const vw = video.videoWidth;
+  //       const vh = video.videoHeight;
+        
+  //       const contexts = [
+  //         canvasRef1.current.getContext('2d', { willReadFrequently: true }),
+  //         canvasRef2.current.getContext('2d', { willReadFrequently: true }),
+  //         canvasRef3.current.getContext('2d', { willReadFrequently: true }),
+  //         canvasRef4.current.getContext('2d', { willReadFrequently: true }),
+  //         canvasRef5.current.getContext('2d', { willReadFrequently: true })
+  //       ].filter(Boolean);
+
+  //       contexts.forEach((ctx, i) => {
+  //         const width = i < 4 ? 800 : 300; // 1~3은 400, 4(게이지)는 200 (기존 코드 기준)
+  //         const height = i < 3 ? 200 : 30;  // 1~3은 200, 4(게이지)는 30
+          
+  //         // 1. 원본 그리기 (필터 적용)
+  //         ctx.filter = 'contrast(180%) brightness(180%) grayscale(100%)';
+  //         if (i < 3) {
+  //           const offsetX = [0.01, 0.01 + 100/vw, 0.01 + 250/vw];
+  //           ctx.drawImage(video, vw * offsetX[i], vh * 0.7 - 14, 40, 15, 0, 0, 400, 150);
+  //         } else if (i === 3) {
+  //           ctx.drawImage(video, vw * 0.5 - 45, vh * 0.84 + 10, 90, 15, 0, 0, 200, 30);
+  //         } else {
+  //           ctx.drawImage(video, vw * 0.6 , vh * 0.5 - 240, 300, 400, 0, 0, 300, 400);
+  //         }
+  //         ctx.filter = 'none';
+          
+
+  //         // 2. 픽셀 데이터 가져오기
+  //         const imgData = (i < 3 ? ctx.getImageData(0, 0, 400, 150) : 
+  //         (i === 3 ? ctx.getImageData(0, 0, 200, 30) : null)) || 
+  //         (i === 4 ? ctx.getImageData(0, 0, 300, 400) : null);
+
+  //         const data = imgData ? imgData.data : null;
+  
+  //                 // 2. [아이템 영역] 흰색 숫자 추출 + 누적 최솟값 필터
+  //       // if (i < 3) {
+  //       //   if (!accumDataRef.current[i] || frameCountRef.current % ACCUM_LIMIT === 0) {
+  //       //     accumDataRef.current[i] = new Uint8ClampedArray(data);
+  //       //   } else {
+  //       //     const buffer = accumDataRef.current[i];
+  //       //     for (let j = 0; j < data.length; j += 4) {
+  //       //       // RGB가 모두 200 이상인 '흰색'만 추출 (아이템 등급 색상/반짝임 배제)
+  //       //       const isWhite = data[j] > 200 && data[j+1] > 200 && data[j+2] > 200;
+  //       //       const currentVal = isWhite ? data[j] : 0; // 흰색이면 밝기 유지, 아니면 0(검정)
+              
+  //       //       // 시간적 최솟값 적용 (반짝임이 터져서 흰색 영역이 넓어지는 현상 방지)
+  //       //       const minVal = Math.min(currentVal, buffer[j]);
+  //       //       buffer[j] = buffer[j + 1] = buffer[j + 2] = minVal;
+
+  //       //       // 이진화: 최종적으로 추출된 흰색(minVal > 0)만 검은 글자로 변환
+  //       //       if (minVal > 0) {
+  //       //         data[j] = data[j + 1] = data[j + 2] = 0;
+  //       //       } else {
+  //       //         data[j] = data[j + 1] = data[j + 2] = 255;
+  //       //       }
+  //       //     }
+  //       //   }
+  //       // } 
+  //       // 3. 아이템 영역(0, 1, 2)만 누적 최솟값 필터링 적용
+  //       // if (i < 3) {
+  //       //   if (!accumDataRef.current[i] || frameCountRef.current % ACCUM_LIMIT === 0) {
+  //       //     // 초기화 혹은 첫 프레임
+  //       //     accumDataRef.current[i] = new Uint8ClampedArray(data);
+  //       //   } else {
+  //       //     const buffer = accumDataRef.current[i];
+  //       //     for (let j = 0; j < data.length; j += 4) {
+  //       //       // 최솟값 선택 (반짝임 제거)
+  //       //       const minVal = Math.min(data[j], buffer[j]);
+  //       //       buffer[j] = buffer[j + 1] = buffer[j + 2] = minVal;
+
+  //       //       // 이진화: 밝은 부분을 검은색으로
+  //       //       if (minVal > 150) {
+  //       //         data[j] = data[j + 1] = data[j + 2] = 0;
+  //       //       } else {
+  //       //         data[j] = data[j + 1] = data[j + 2] = 255;
+  //       //       }
+  //       //     }
+  //       //   }
+  //       // } 
+  //       // 흰색 → 검정(0), 나머지 → 흰색(255)
+  //       if (i < 3) {
+  //           for (let j = 0; j < data.length; j += 4) {
+  //             const isWhite = data[j] > 200 && data[j+1] > 200 && data[j+2] > 200;
+  //             if (isWhite) {
+  //               data[j] = data[j + 1] = data[j + 2] = 0;
+  //             } else {
+  //               data[j] = data[j + 1] = data[j + 2] = 255;
+  //             }
+  //           }
+  //           ctx.putImageData(imgData, 0, 0);
+  //         }
+  //         else if (i === 3) {
+  //           for (let j = 0; j < data.length; j += 4) {
+  //             const b = data[j];
+  //             const r = data[j];
+  //             const g = data[j + 1];
+  
+  //             if (r > 200 && g > 200 && b > 200) {
+  //               data[j] = data[j + 1] = data[j + 2] = 0; // 숫자 (검정)
+  //             } else {
+  //               data[j] = data[j + 1] = data[j + 2] = 255; // 배경 (흰색)
+  //             }
+  //           }
+  //           ctx.putImageData(imgData, 0, 0);
+  //         }
+  //         else {
+  //           ctx.putImageData(imgData, 0, 0);
+  //         }
+  //       });
+  //       rafRef.current = requestAnimationFrame(drawFrames);
+  //     };
+      
+  //     rafRef.current = requestAnimationFrame(drawFrames);
+  //     intervalRef.current = setInterval(analyzeFrames, 3000);
+  
+  //   } catch (err) {
+  //     console.error("화면 공유 실패:", err);
+  //   }
+  // };
+
+    // [추가] 캡처 중지 및 모든 리소스 해제
+  const stopCapture = () => {
+    setStatus("중단됨");
+
+    // 1. OCR 분석 루프 즉시 제거
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+
+    if (frameSendIntervalRef.current) {
+      clearInterval(frameSendIntervalRef.current);
+      frameSendIntervalRef.current = null;
+    }
+    
+    // 2. 애니메이션 프레임 중단
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+
+    // 3. 미디어 스트림 트랙 종료 (브라우저 상단 공유 중지)
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => {
+        track.stop();
+        console.log(`Track ${track.label} 정지됨`);
+      });
+      streamRef.current = null;
+    }
+
+    // 4. 비디오 객체 초기화
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    
+    // 5. 캔버스 초기화
+    [canvasRef1, canvasRef2, canvasRef3, canvasRef4].forEach((ref) => {
+        if (ref?.current) {
+          const ctx = ref.current.getContext('2d');
+          if (ctx) {
+            ctx.clearRect(0, 0, ref.current.width, ref.current.height);
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(0, 0, ref.current.width, ref.current.height);
+          }
+        }
+      });
+    isInitialized.current = false;
+  };
+
+  // 워커 미리 준비 (Tesseract + TensorFlow 숫자 인식)
+  useEffect(() => {
+    const initWorker = async () => {
+      const worker = await Tesseract.createWorker('eng');
+        // 정확도 향상을 위한 파라미터 설정
+      await worker.setParameters({
+        // 숫자, 한글, 공백, 자주 쓰이는 핵심 단어들만 허용 (오인식 방지)
+        tessedit_char_whitelist: '0123456789/ ',
+        tessedit_pageseg_mode: '13', // 'Single text line' 모드
+      });
+      workerRef.current = worker;
+      console.log("OCR 워커 준비 완료");
+    };
+    initWorker();
+    return () => {
+      stopCapture();
+      if (workerRef.current) workerRef.current.terminate();
+    };
+  }, []);
+
+  const analyzeFrames = async () => {
+    if (!workerRef.current || !videoRef.current) return;
+  
+    try {
+      // [기존] 캔버스 밝기 체크 (암전 감지)
+      const gaugeCtx = canvasRef4.current.getContext('2d', { willReadFrequently: true });
+      const gaugeImgData = gaugeCtx.getImageData(0, 0, 200, 30);
+      const pixels = gaugeImgData.data;
+  
+      let totalBrightness = 0;
+      for (let i = 0; i < pixels.length; i += 4) {
+        totalBrightness += pixels[i];
+      }
+      const avgBrightness = totalBrightness / (pixels.length / 4);
+  
+      if (avgBrightness < 30) {
+        console.log("🌑 화면이 너무 어둡습니다 (로딩/채널이동 중). 분석 대기...");
+        return;
+      }
+
+      const captureDelays = [0, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000];
+      const refs = [canvasRef1, canvasRef2, canvasRef3, canvasRef4];
+      // 아이템: 3시점 × 캔버스 3개 = 9장, 게이지: 1장 (0ms 시점)
+      const itemSnapshotSets = await Promise.all(
+        captureDelays.map(
+          (delay) =>
+            new Promise((resolve) => {
+              setTimeout(() => {
+                const processedImages = refs.slice(0, 3).map((r) => //{
+                  r.current ? r.current.toDataURL('image/png') : null
+                  //if (!r.current) return null;
+                  //return preprocessCanvas(r.current); 
+                  //r.current ? canvasToDataURLUpscaled(r.current, 2) : null
+              );
+                resolve(processedImages);
+              }, delay);
+            })
+        )
+      );
+      //const gaugeImage =
+        //refs[3].current ? refs[3].current.toDataURL('image/png') : null;
+        //const gaugeImage = refs[3].current ? preprocessCanvas(refs[3].current) : null;
+        const gaugeImage = refs[3].current ? refs[3].current.toDataURL('image/png') : null;
+      // 9 + 1 = 10장 한 번에 병렬 OCR
+      const itemImages = itemSnapshotSets.flat();
+      const allImages = [...itemImages, gaugeImage];
+      const allOcrResults = await Promise.all(
+        allImages.map((img) => (img ? workerRef.current.recognize(img) : null))
+      );
+  
+      // 아이템 결과: 앞 9개 = 세트0캔버스1~3, 세트1캔버스1~3, 세트2캔버스1~3
+      const itemResults = allOcrResults.slice(0, captureDelays.length * 3);
+      const setSize = 3;
+      const allItemResults = [];
+      for (let s = 0; s < captureDelays.length; s++) {
+        allItemResults.push(itemResults.slice(s * setSize, (s + 1) * setSize));
+      }
+
+      const currentCounts = [0, 1, 2].map((canvasIndex) => {
+        const numbers = allItemResults.map((set) => {
+          const res = set[canvasIndex];
+          return res ? parseInt(res.data.text.replace(/[^0-9]/g, ''), 10) || 0 : 0;
+        });
+        return majorityVote(numbers);
+      });
+
+      // 게이지: 마지막 1개 결과만 사용 (다수결 없음)
+      //const gaugeRes = allOcrResults[0,captureDelays.length * 3];
+      const gaugeRes = allOcrResults[captureDelays.length * 3];
+      const currentGauge = gaugeRes
+        ? parseInt(
+            gaugeRes.data.text.split('/')[0].replace(/[^0-9]/g, ''),
+            10
+          ) || 0
+        : 0;
+  
+      // ----- 이하 기존 로직 동일 (초기화, gaugeDiff, 검증, last 갱신, sendToServer 등) -----
+      if (!isInitialized.current) {
+        if (currentGauge > 0) {
+          lastGauge.current = currentGauge;
+          lastCounts.current = currentCounts;
+          isInitialized.current = true;
+          console.log("✅ 기준 데이터 설정 완료:", { 게이지: currentGauge, 아이템: currentCounts });
+        }
+        return;
+      }
+  
+      const gaugeDiff = lastGauge.current - currentGauge;
+  
+      if (gaugeDiff > 0 && gaugeDiff <= 360) {
+        console.log(`📉 생활 포착: -${gaugeDiff} 소모 (잔량: ${currentGauge})`);
+  
+        currentCounts.forEach((count, i) => {
+          const itemDiff = count - lastCounts.current[i];
+  
+          if (itemDiff > 0 && itemDiff <= 300) {
+            const itemNames = ["고대", "고급", "희귀"];
+            console.log(`🎯 ${itemNames[i]} +${itemDiff}개 (검증 통과), 총 ${count}개`);
+  
+            sendToServer({
+              item_type: itemNames[i],
+              gain: itemDiff,
+              total: count,
+              used_gauge: gaugeDiff
+            });
+          } else if (itemDiff > 300) {
+            console.warn(`⚠️ 아이템 수치 비정상(무시됨): +${itemDiff} (300개 초과)`);
+          }
+        });
+  
+        lastCounts.current = currentCounts;
+        lastGauge.current = currentGauge;
+      } else if (gaugeDiff > 360) {
+        console.warn(`⚠️ 게이지 급변 감지(무시됨): -${gaugeDiff} (360 초과)`);
+        lastGauge.current = currentGauge;
+      } else if (currentGauge > lastGauge.current || gaugeDiff === 0) {
+        lastGauge.current = currentGauge;
+      }
+    } catch (err) {
+      console.error("❌ 분석 중 오류:", err);
+    }
+  };
+  // const analyzeFrames = async () => {
+  //   if (!workerRef.current || !videoRef.current) return;
+    
+  //   try {
+  //       // [추가] 캔버스 밝기 체크 (암전 감지)
+  //     const gaugeCtx = canvasRef4.current.getContext('2d', { willReadFrequently: true });
+  //     const gaugeImgData = gaugeCtx.getImageData(0, 0, 200, 30);
+  //     const pixels = gaugeImgData.data;
+    
+  //     let totalBrightness = 0;
+  //     for (let i = 0; i < pixels.length; i += 4) {
+  //       totalBrightness += pixels[i]; // Grayscale 상태이므로 R값만 합산
+  //     }
+  //     const avgBrightness = totalBrightness / (pixels.length / 4);
+
+  //     // 평균 밝기가 너무 낮으면(예: 30 미만) 로딩 중 혹은 검은 화면으로 간주하고 중단
+  //     if (avgBrightness < 30) {
+  //       console.log("🌑 화면이 너무 어둡습니다 (로딩/채널이동 중). 분석 대기...");
+  //       return;
+  //     }
+
+  //     // OCR 분석
+  //     const canvasRefs = [canvasRef1, canvasRef2, canvasRef3, canvasRef4];
+  //     const images = await Promise.all(
+  //       canvasRefs.map(ref => ref.current ? ref.current.toDataURL('image/png') : null)
+  //     );
+  
+  //     const results = await Promise.all(
+  //       images.map(img => img ? workerRef.current.recognize(img) : null)
+  //     );
+  
+  //     // 데이터 파싱
+  //     const currentCounts = results.slice(0, 3).map(res => 
+  //       res ? parseInt(res.data.text.replace(/[^0-9]/g, "")) || 0 : 0
+  //     );
+      
+  //     const gaugeText = results[3] ? results[3].data.text : "";
+  //     const currentGauge = parseInt(gaugeText.split('/')[0].replace(/[^0-9]/g, "")) || 0;
+  
+  //     // 초기화 단계 (최초 1회 실행)
+  //     if (!isInitialized.current) {
+  //       if (currentGauge > 0) {
+  //         lastGauge.current = currentGauge;
+  //         lastCounts.current = currentCounts;
+  //         isInitialized.current = true;
+  //         console.log("✅ 기준 데이터 설정 완료:", { 게이지: currentGauge, 아이템: currentCounts });
+  //       }
+  //       return;
+  //     }
+  
+  //     // 게이지 변화 계산
+  //     const gaugeDiff = lastGauge.current - currentGauge;
+  
+  //     // 게이지 소모 검증 (1 ~ 360 사이만 정상 생활로 인정)
+  //     if (gaugeDiff >= 0 && gaugeDiff <= 360) {
+  //       console.log(`📉 생활 포착: -${gaugeDiff} 소모 (잔량: ${currentGauge})`);
+  
+  //       currentCounts.forEach((count, i) => {
+  //         const itemDiff = count - lastCounts.current[i];
+  
+  //         // 아이템 획득량 검증 (1 ~ 300개 사이만 정상 획득으로 인정)
+  //         if (itemDiff > 0 && itemDiff <= 300) {
+  //           const itemNames = ["고대", "고급", "희귀"];
+  //           console.log(`🎯 ${itemNames[i]} +${itemDiff}개 (검증 통과)`);
+            
+  //           sendToServer({
+  //             item_type: itemNames[i],
+  //             gain: itemDiff,
+  //             total: count,
+  //             used_gauge: gaugeDiff
+  //           });
+  //         } 
+  //         else if (itemDiff > 300) {
+  //           console.warn(`⚠️ 아이템 수치 비정상(무시됨): +${itemDiff} (300개 초과)`);
+  //         }
+  //       });
+  
+  //       accumDataRef.current = [null, null, null, null];
+  //       frameCountRef.current = 0; 
+
+  //       // 정상 범위일 때만 기준점 갱신
+  //       lastCounts.current = currentCounts;
+  //       lastGauge.current = currentGauge;
+  //     } 
+  //     else if (gaugeDiff > 360) {
+  //       console.warn(`⚠️ 게이지 급변 감지(무시됨): -${gaugeDiff} (360 초과)`);
+  //       lastGauge.current = currentGauge; // 다음 분석을 위해 현재값 동기화
+  //     }
+  //     else if (currentGauge > lastGauge.current || gaugeDiff === 0) {
+  //       // 충전 중이거나 변화 없을 때 게이지 수치만 최신화
+  //       lastGauge.current = currentGauge;
+  //     }
+  
+  //   } catch (err) {
+  //     console.error("❌ 분석 중 오류:", err);
+  //   }
+  // };
+
+  const sendToServer = async (text) => {
+    try {
+      const response = await axios.post(`${API_URL}/api/collect`, {
+        raw_text: text,
+        timestamp: new Date().toISOString()
+      });
+      setLogs(prev => [response.data.received, ...prev].slice(0, 10));
+    } catch (err) {
+      console.error("서버 전송 실패:", err);
+    }
+  };
+
+  return (
+    <div style={{ padding: '20px', fontFamily: 'sans-serif' }}>
+      <h1>LoA Life Analytics</h1>
+      <button onClick={startCapture} style={{ padding: '10px 20px', fontSize: '16px' }}>화면 공유 시작</button>
+      <button onClick={stopCapture} style={{ marginLeft: '10px' }}>중지</button>
+      <p>상태: {status}</p>
+
+      <div style={{ display: 'flex', gap: '10px' }}>
+        <video ref={videoRef} autoPlay style={{ width: '300px', border: '1px solid #ccc' }} />
+        <div><p>고대 유물</p><canvas ref={canvasRef1} width="80" height="80" style={{ border: '2px solid red' }} /></div>
+        <div><p>희귀한 유물</p><canvas ref={canvasRef2} width="80" height="80" style={{ border: '2px solid blue' }} /></div>
+        <div><p>아비도스 유물</p><canvas ref={canvasRef3} width="80" height="80" style={{ border: '2px solid green' }} /></div>
+      </div>
+      <div><p>생활의 기운</p><canvas ref={canvasRef4} width="200" height="30" style={{ border: '2px solid yellow' }} /></div>
+      <div>
+        <p>캐릭터 주변</p>
+        <canvas ref={canvasRef5} width="250" height="400" style={{ border: '2px solid orange' }} />
+      </div>
+      <h3>최근 획득 로그 (서버 전송 결과)</h3>
+      <ul>{logs.map((log, i) => <li key={i}>{log}</li>)}</ul>
+
+      <div className="tool-preset" style={{ border: '1px solid #ddd', padding: '10px' }}>
+        <h3>🛠 도구 스펙 설정</h3>
+      <label> 기본 보상: </label>
+      <input type="number" step="0.1" onChange={(e) => setToolSpec({...toolSpec, basicBonus: e.target.value})} /> %
+      <label> 희귀 보상: </label>
+      <input type="number" step="0.1" onChange={(e) => setToolSpec({...toolSpec, basicBonus: e.target.value})} /> %
+      <label> 전체 보상: </label>
+      <input type="number" step="0.1" onChange={(e) => setToolSpec({...toolSpec, basicBonus: e.target.value})} /> %
+      <label> 고급 보상: </label>
+      <input type="number" step="0.1" onChange={(e) => setToolSpec({...toolSpec, basicBonus: e.target.value})} /> %
+      <label> 고대 보상: </label>
+      <input type="number" step="0.1" onChange={(e) => setToolSpec({...toolSpec, basicBonus: e.target.value})} /> %
+      </div>
+    </div> 
+  );
+
+  
+}
+
+export default Test;

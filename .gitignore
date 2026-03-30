@@ -82,6 +82,9 @@ target/
 profile_default/
 ipython_config.py
 
+# test
+frontend/src/test.jsx
+
 # pyenv
 #   For a library or package, you might want to ignore these files since the code is
 #   intended to run in multiple environments; otherwise, check them in:
@@ -128,6 +131,7 @@ ENV/
 env.bak/
 venv.bak/
 frontend/.env.local
+# backend/.env
 
 # Spyder project settings
 .spyderproject
@@ -154,6 +158,9 @@ dmypy.json
 cython_debug/
 
 frontend/node_modules/
+
+# onnxruntime-web WASM — Vite buildStart에서 node_modules → public 복사본 (재생성됨)
+frontend/public/ort-wasm/*.wasm
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
